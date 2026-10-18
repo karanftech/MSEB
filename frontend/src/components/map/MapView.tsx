@@ -241,7 +241,7 @@ export default function MapView({
           zoom: 16,
           rotate: true,
           bearing: officerHeading || 0,
-          touchRotate: true,
+          touchRotate: false, // Managed by our high-performance RAF gesture controller
           touchZoom: true,
           shiftKeyRotate: true,
           rotateControl: false,
@@ -253,8 +253,8 @@ export default function MapView({
         const layerConfig = TILE_LAYERS['roadmap'];
         tileLayerRef.current = L.tileLayer(layerConfig.url, layerConfig.options).addTo(map);
 
-        // Listen for rotate events
-        map.on('rotate', () => {
+        // Sync bearing on rotateend to avoid thrashing React state on every frame
+        map.on('rotateend', () => {
           const bearing = typeof (map as any).getBearing === 'function' ? (map as any).getBearing() : 0;
           setCurrentBearing(bearing);
         });
@@ -264,11 +264,16 @@ export default function MapView({
           setIsFollowingInternal(false);
         });
 
-        // ── Direct 2-Finger Touch Rotation Gesture (Google Maps style) ────────
+        // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
         const container = mapContainerRef.current;
         let isTwoFingerRotating = false;
-        let startAngle = 0;
-        let startBearing = 0;
+        let hasRotatedPastThreshold = false;
+        let lastTouchAngle = 0;
+        let accumulatedDiff = 0;
+        let targetBearing = officerHeading || 0;
+        let currentRenderBearing = targetBearing;
+        let touchRafId: number | null = null;
+        let lastTouchUiSync = 0;
 
         const calcTouchAngle = (t1: Touch, t2: Touch): number => {
           const dx = t2.clientX - t1.clientX;
@@ -276,67 +281,173 @@ export default function MapView({
           return Math.atan2(dy, dx) * (180 / Math.PI);
         };
 
+        const stepRotation = () => {
+          let diff = targetBearing - currentRenderBearing;
+          if (diff > 180) diff -= 360;
+          if (diff < -180) diff += 360;
+
+          // If almost reached target and fingers lifted, snap and complete
+          if (!isTwoFingerRotating && Math.abs(diff) < 0.2) {
+            currentRenderBearing = targetBearing;
+            if (typeof map.setBearing === 'function') {
+              map.setBearing(currentRenderBearing);
+            }
+            touchRafId = null;
+            return;
+          }
+
+          // LERP damping factor (0.42) produces continuous, fluid rotation without jitter
+          currentRenderBearing = (currentRenderBearing + diff * 0.42 + 360) % 360;
+          if (typeof map.setBearing === 'function') {
+            map.setBearing(currentRenderBearing);
+          }
+
+          touchRafId = requestAnimationFrame(stepRotation);
+        };
+
         const handleTouchStart = (e: TouchEvent) => {
           if (e.touches.length === 2) {
             isTwoFingerRotating = true;
-            startAngle = calcTouchAngle(e.touches[0], e.touches[1]);
-            startBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            hasRotatedPastThreshold = false;
+            accumulatedDiff = 0;
+            lastTouchAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            const liveBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            targetBearing = liveBearing;
+            currentRenderBearing = liveBearing;
           } else {
             isTwoFingerRotating = false;
+            hasRotatedPastThreshold = false;
           }
         };
 
         const handleTouchMove = (e: TouchEvent) => {
           if (isTwoFingerRotating && e.touches.length === 2) {
+            // Prevent default browser viewport zoom/pan gesture conflict
+            if (e.cancelable) {
+              e.preventDefault();
+            }
+
             const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
-            const deltaAngle = currentAngle - startAngle;
-            // Subtract deltaAngle so rotating clockwise rotates map view intuitively
-            const newBearing = (startBearing - deltaAngle + 360) % 360;
-            if (typeof map.setBearing === 'function') {
-              map.setBearing(newBearing);
-              setCurrentBearing(newBearing);
+            let delta = currentAngle - lastTouchAngle;
+
+            // Normalize delta to [-180, 180] degrees (eliminates any 180/-180 wrap-around jump)
+            if (delta > 180) delta -= 360;
+            if (delta < -180) delta += 360;
+            lastTouchAngle = currentAngle;
+
+            // Small 1.5° deadzone: distinguishes intentional rotation from accidental pinch tremor
+            if (!hasRotatedPastThreshold) {
+              accumulatedDiff += delta;
+              if (Math.abs(accumulatedDiff) >= 1.5) {
+                hasRotatedPastThreshold = true;
+                if (map.dragging && map.dragging.enabled()) {
+                  map.dragging.disable();
+                }
+              } else {
+                return;
+              }
+            }
+
+            // Invert delta so clockwise finger twist rotates view clockwise
+            targetBearing = (targetBearing - delta + 360) % 360;
+
+            if (!touchRafId) {
+              touchRafId = requestAnimationFrame(stepRotation);
+            }
+
+            // Throttle React state updates to 100ms so UI never lags
+            const now = performance.now();
+            if (now - lastTouchUiSync > 100) {
+              lastTouchUiSync = now;
+              setCurrentBearing(targetBearing);
             }
           }
         };
 
         const handleTouchEnd = (e: TouchEvent) => {
           if (e.touches.length < 2) {
-            isTwoFingerRotating = false;
+            if (isTwoFingerRotating) {
+              isTwoFingerRotating = false;
+              hasRotatedPastThreshold = false;
+              if (map.dragging && !map.dragging.enabled()) {
+                map.dragging.enable();
+              }
+              const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : targetBearing;
+              setCurrentBearing(finalBearing);
+            }
           }
         };
 
-        // Desktop Shift+Drag or Alt+Drag rotate
+        // Desktop Shift+Drag or Alt+Drag smooth rotate
         let isShiftDragging = false;
-        let shiftStartX = 0;
-        let shiftStartBearing = 0;
+        let lastShiftX = 0;
+        let shiftTargetBearing = 0;
+        let shiftRenderBearing = 0;
+        let shiftRafId: number | null = null;
+        let lastShiftUiSync = 0;
+
+        const stepShiftRotation = () => {
+          let diff = shiftTargetBearing - shiftRenderBearing;
+          if (diff > 180) diff -= 360;
+          if (diff < -180) diff += 360;
+
+          if (!isShiftDragging && Math.abs(diff) < 0.2) {
+            shiftRenderBearing = shiftTargetBearing;
+            if (typeof map.setBearing === 'function') {
+              map.setBearing(shiftRenderBearing);
+            }
+            shiftRafId = null;
+            return;
+          }
+
+          shiftRenderBearing = (shiftRenderBearing + diff * 0.42 + 360) % 360;
+          if (typeof map.setBearing === 'function') {
+            map.setBearing(shiftRenderBearing);
+          }
+
+          shiftRafId = requestAnimationFrame(stepShiftRotation);
+        };
 
         const handleMouseDown = (e: MouseEvent) => {
           if (e.shiftKey || e.altKey) {
             isShiftDragging = true;
-            shiftStartX = e.clientX;
-            shiftStartBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            lastShiftX = e.clientX;
+            const liveBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            shiftTargetBearing = liveBearing;
+            shiftRenderBearing = liveBearing;
             e.preventDefault();
           }
         };
 
         const handleMouseMove = (e: MouseEvent) => {
           if (isShiftDragging) {
-            const dx = e.clientX - shiftStartX;
-            const newBearing = (shiftStartBearing + dx * 0.5 + 360) % 360;
-            if (typeof map.setBearing === 'function') {
-              map.setBearing(newBearing);
-              setCurrentBearing(newBearing);
+            const dx = e.clientX - lastShiftX;
+            lastShiftX = e.clientX;
+            shiftTargetBearing = (shiftTargetBearing + dx * 0.45 + 360) % 360;
+
+            if (!shiftRafId) {
+              shiftRafId = requestAnimationFrame(stepShiftRotation);
+            }
+
+            const now = performance.now();
+            if (now - lastShiftUiSync > 100) {
+              lastShiftUiSync = now;
+              setCurrentBearing(shiftTargetBearing);
             }
           }
         };
 
         const handleMouseUp = () => {
-          isShiftDragging = false;
+          if (isShiftDragging) {
+            isShiftDragging = false;
+            const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : shiftTargetBearing;
+            setCurrentBearing(finalBearing);
+          }
         };
 
         if (container) {
           container.addEventListener('touchstart', handleTouchStart, { passive: true });
-          container.addEventListener('touchmove', handleTouchMove, { passive: true });
+          container.addEventListener('touchmove', handleTouchMove, { passive: false });
           container.addEventListener('touchend', handleTouchEnd, { passive: true });
           container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
           container.addEventListener('mousedown', handleMouseDown);
@@ -393,8 +504,15 @@ export default function MapView({
     const map = leafletMapRef.current;
     if (!map) return;
     if (typeof (map as any).setBearing === 'function') {
+      const pane = mapContainerRef.current?.querySelector('.leaflet-rotate-pane');
+      if (pane) {
+        pane.classList.add('leaflet-rotating-smooth');
+      }
       (map as any).setBearing(0);
       setCurrentBearing(0);
+      setTimeout(() => {
+        pane?.classList.remove('leaflet-rotating-smooth');
+      }, 400);
     }
   };
 

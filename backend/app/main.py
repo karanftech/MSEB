@@ -1,14 +1,14 @@
-# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, Request, Response
-# pyrefly: ignore [missing-import]
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import init_db, close_db, engine
 from app.services.cache_service import cache_service
 from app.routers import auth, customers, payments, routes, officers, assignments, dashboard, reports
+from sqlalchemy import text
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -33,19 +33,36 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Global Exception Handler to ensure CORS headers are ALWAYS returned, even on 500 errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    origin = request.headers.get("origin")
+    headers = {
+        "Access-Control-Allow-Origin": origin if origin else "*",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Server Error: {str(exc)}"},
+        headers=headers
+    )
+
 # Custom Security & Anti-Caching Middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
     response: Response = await call_next(request)
-    if request.method != "OPTIONS":
-        # Only disable caching on API endpoints (not pages/static assets)
-        if request.url.path.startswith("/api"):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
+    if request.url.path.startswith("/api"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
     return response
 
 
@@ -78,6 +95,23 @@ async def root():
         "version": "1.0.0",
         "docs_url": "/docs"
     }
+
+@app.get("/api/health/db", tags=["Health"])
+async def health_db():
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT 1;"))
+            row = result.scalar()
+            return {"status": "connected", "database": "PostgreSQL OK", "value": row}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e),
+                "db_configured": bool(settings.DATABASE_URL or settings.DATABASE_PUBLIC_URL or settings.DATABASE_PRIVATE_URL or settings.POSTGRES_URL or settings.NEON_DATABASE_URL)
+            }
+        )
 
 if __name__ == "__main__":
     import uvicorn

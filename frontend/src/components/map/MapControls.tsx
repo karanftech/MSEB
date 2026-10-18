@@ -145,7 +145,7 @@ export default function MapControls({
                 title={`Reset to True North (Current: ${Math.round(officerHeading || 0)}°)`}
               >
                 <Compass
-                  className="w-5 h-5 text-red-500 transition-transform duration-300"
+                  className="w-5 h-5 text-red-500 transition-transform duration-75 ease-out"
                   style={{ transform: `rotate(${-(officerHeading || 0)}deg)` }}
                 />
               </button>

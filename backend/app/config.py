@@ -4,6 +4,8 @@ from typing import List
 
 class Settings(BaseSettings):
     DATABASE_URL: str = ""
+    DATABASE_PUBLIC_URL: str = ""
+    DATABASE_PRIVATE_URL: str = ""
     POSTGRES_URL: str = ""
     NEON_DATABASE_URL: str = ""
     OSRM_BASE_URL: str = "https://router.project-osrm.org"
@@ -18,6 +20,8 @@ class Settings(BaseSettings):
     def async_database_url(self) -> str:
         raw_url = (
             self.DATABASE_URL
+            or self.DATABASE_PUBLIC_URL
+            or self.DATABASE_PRIVATE_URL
             or self.POSTGRES_URL
             or self.NEON_DATABASE_URL
             or "postgresql+asyncpg://postgres:postgres@localhost:5432/electricity_collection"
