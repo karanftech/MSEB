@@ -404,15 +404,19 @@ export default function MapView({
                 this._zoom = map._limitZoom(this._zoom);
               }
 
-              if (map.options.touchZoom === 'center') {
+              if (map.options.touchZoom === 'center' || !this._pinchStartLatLng) {
                 this._center = this._startLatLng;
                 if (scale === 1 && newBearing === null) return;
               } else {
                 const delta = p1._add(p2)._divideBy(2)._subtract(this._centerPoint);
                 if (scale === 1 && delta.x === 0 && delta.y === 0 && newBearing === null) return;
-                const currentMapBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
-                const alpha = -(newBearing !== null ? newBearing : currentMapBearing) * (L as any).DomUtil.DEG_TO_RAD;
-                this._center = map.unproject(map.project(this._pinchStartLatLng).subtract(delta.rotate(alpha)));
+                const currentMapBearing = newBearing !== null ? newBearing : (typeof map.getBearing === 'function' ? map.getBearing() : 0);
+                const alpha = -currentMapBearing * (L as any).DomUtil.DEG_TO_RAD;
+                const rotatedDelta = delta.rotate(alpha);
+                this._center = map.unproject(
+                  map.project(this._pinchStartLatLng, this._zoom).subtract(rotatedDelta),
+                  this._zoom
+                );
               }
             }
 
@@ -452,10 +456,11 @@ export default function MapView({
             );
 
             if (this.zoom) {
-              if (this._map.options.zoomAnimation) {
-                this._map._animateZoom(this._center, this._map._limitZoom(this._zoom), true, this._map.options.zoomSnap);
+              const targetZoom = this._map._limitZoom(this._zoom);
+              if (this._map.options.zoomAnimation && Math.abs(targetZoom - this._map.getZoom()) > 0.25) {
+                this._map._animateZoom(this._center, targetZoom, true, this._map.options.zoomSnap);
               } else {
-                this._map._resetView(this._center, this._map._limitZoom(this._zoom));
+                this._map._resetView(this._center, targetZoom);
               }
             }
           };
@@ -552,6 +557,7 @@ export default function MapView({
           bearing: officerHeading || 0,
           touchRotate: true,
           touchZoom: true,
+          bounceAtZoomLimits: false, // Prevents rubber-banding/bouncing beyond zoom boundaries
           zoomSnap: 0, // Continuous fractional zoom - eliminates chunky integer snapping
           zoomDelta: 0.5, // Refined 0.5 zoom steps for + / - buttons
           wheelPxPerZoomLevel: 120, // Gentle, controlled trackpad & wheel zooming
