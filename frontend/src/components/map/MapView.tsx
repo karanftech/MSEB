@@ -336,11 +336,43 @@ export default function MapView({
           attributionControl: false,
         });
 
+        // Fix leaflet-rotate's fatal coordinate math bug:
+        // In leaflet-rotate, containerPointToLayerPoint mistakenly uses _getRotatePanePos() (the pane's
+        // top-left CSS translation) as the rotation pivot instead of the map's center pivot.
+        // This causes containerPointToLayerPoint and _getPaddedPixelBounds to be shifted by hundreds of pixels,
+        // which translates the polyline canvas/SVG container far away from the actual roads and meters.
+        const mapProto = Object.getPrototypeOf(map);
+        const origContainerToLayer = map.containerPointToLayerPoint;
+        const origLayerToContainer = map.layerPointToContainerPoint;
+
+        map.containerPointToLayerPoint = function (point: any) {
+          if (!this._rotate || !this._bearing) {
+            return origContainerToLayer ? origContainerToLayer.apply(this, arguments) : (mapProto as any).containerPointToLayerPoint.apply(this, arguments);
+          }
+          const pt = (L as any).point(point);
+          const mapPanePos = typeof this._getMapPanePos === 'function' ? this._getMapPanePos() : new (L as any).Point(0, 0);
+          const center = typeof this._getPixelCenter === 'function' ? this._getPixelCenter() : this.getSize().divideBy(2);
+          return pt.subtract(mapPanePos).subtract(center).rotate(-this._bearing).add(center);
+        };
+
+        map.layerPointToContainerPoint = function (point: any) {
+          if (!this._rotate || !this._bearing) {
+            return origLayerToContainer ? origLayerToContainer.apply(this, arguments) : (mapProto as any).layerPointToContainerPoint.apply(this, arguments);
+          }
+          const pt = (L as any).point(point);
+          const mapPanePos = typeof this._getMapPanePos === 'function' ? this._getMapPanePos() : new (L as any).Point(0, 0);
+          const center = typeof this._getPixelCenter === 'function' ? this._getPixelCenter() : this.getSize().divideBy(2);
+          return pt.subtract(center).rotate(this._bearing).add(center).add(mapPanePos);
+        };
+
         // Initialize dedicated Canvas renderer for routes (high GPU performance & zero SVG DOM distortion)
         routeCanvasRendererRef.current = (L as any).canvas({ padding: 0.75 });
 
         // Keep routes locked with sub-pixel precision whenever rotation or zoom gesture finishes
         const handleRouteSync = () => {
+          if (routeCanvasRendererRef.current && typeof routeCanvasRendererRef.current._update === 'function') {
+            routeCanvasRendererRef.current._update();
+          }
           if (routePolylineRef.current && typeof routePolylineRef.current.redraw === 'function') {
             routePolylineRef.current.redraw();
           }
@@ -882,6 +914,9 @@ export default function MapView({
       // Update coordinates on existing layers without DOM teardown
       routePolylineCasingRef.current.setLatLngs(latLngs);
       routePolylineRef.current.setLatLngs(latLngs);
+      if (typeof routeCanvasRendererRef.current?._update === 'function') {
+        routeCanvasRendererRef.current._update();
+      }
       if (typeof routePolylineRef.current.redraw === 'function') {
         routePolylineRef.current.redraw();
       }
