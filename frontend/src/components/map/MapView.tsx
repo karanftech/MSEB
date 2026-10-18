@@ -148,6 +148,7 @@ export default function MapView({
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
   const routePolylineCasingRef = useRef<any>(null);
   const routePolylineRef = useRef<any>(null);
+  const lastDrawnRouteKeyRef = useRef<string>('');
   const LRef = useRef<any>(null);
 
   const [mapReady, setMapReady] = useState<boolean>(false);
@@ -348,8 +349,8 @@ export default function MapView({
               }
             }
 
-            // Invert delta so clockwise finger twist rotates view clockwise
-            targetBearing = (targetBearing - delta + 360) % 360;
+            // Rotate clockwise when fingers move/twist to the right
+            targetBearing = (targetBearing + delta + 360) % 360;
 
             if (!touchRafId) {
               touchRafId = requestAnimationFrame(stepRotation);
@@ -703,21 +704,11 @@ export default function MapView({
     });
   }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment]);
 
-  // ── 8. Draw OSRM Polyline Routes on Leaflet ──────────────────────────────────
+  // ── 8. Draw OSRM Polyline Routes on Leaflet (Flicker-Free & Glitch-Free) ─────
   useEffect(() => {
     const L = LRef.current;
     const map = leafletMapRef.current;
     if (!map || !L) return;
-
-    // Remove existing route polylines
-    if (routePolylineCasingRef.current) {
-      map.removeLayer(routePolylineCasingRef.current);
-      routePolylineCasingRef.current = null;
-    }
-    if (routePolylineRef.current) {
-      map.removeLayer(routePolylineRef.current);
-      routePolylineRef.current = null;
-    }
 
     const activePath = multiRoute?.coordinates_path?.length
       ? multiRoute.coordinates_path
@@ -725,10 +716,36 @@ export default function MapView({
       ? route.coordinates_path
       : null;
 
-    if (activePath && activePath.length >= 2) {
-      const latLngs = activePath.map((p) => [p.latitude, p.longitude]);
+    if (!activePath || activePath.length < 2) {
+      if (routePolylineCasingRef.current) {
+        map.removeLayer(routePolylineCasingRef.current);
+        routePolylineCasingRef.current = null;
+      }
+      if (routePolylineRef.current) {
+        map.removeLayer(routePolylineRef.current);
+        routePolylineRef.current = null;
+      }
+      lastDrawnRouteKeyRef.current = '';
+      return;
+    }
 
-      // Outer glowing casing line
+    const routeKey = `${activePath.length}_${activePath[0]?.latitude.toFixed(5)}_${activePath[activePath.length - 1]?.latitude.toFixed(5)}`;
+    const latLngs = activePath.map((p) => [p.latitude, p.longitude]);
+
+    // If the exact same route is already rendered, do nothing (never delete/recreate during rotation)
+    if (routePolylineRef.current && routePolylineCasingRef.current && routeKey === lastDrawnRouteKeyRef.current) {
+      return;
+    }
+
+    const isNewRoute = routeKey !== lastDrawnRouteKeyRef.current;
+    lastDrawnRouteKeyRef.current = routeKey;
+
+    if (routePolylineRef.current && routePolylineCasingRef.current) {
+      // Update coordinates on existing SVG layers without DOM teardown
+      routePolylineCasingRef.current.setLatLngs(latLngs);
+      routePolylineRef.current.setLatLngs(latLngs);
+    } else {
+      // Create new polyline layers if not existing
       routePolylineCasingRef.current = L.polyline(latLngs, {
         color: '#0284c7',
         weight: 8,
@@ -737,7 +754,6 @@ export default function MapView({
         lineJoin: 'round',
       }).addTo(map);
 
-      // Inner crisp electric blue route line
       routePolylineRef.current = L.polyline(latLngs, {
         color: '#38bdf8',
         weight: 4.5,
@@ -745,13 +761,13 @@ export default function MapView({
         lineCap: 'round',
         lineJoin: 'round',
       }).addTo(map);
-
-      // If not actively following officer GPS, auto fit to route
-      if (!isFollowing) {
-        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50] });
-      }
     }
-  }, [mapReady, route, multiRoute, isFollowing]);
+
+    // Auto-fit bounds ONLY once when a new route is received, never during rotation or dragging
+    if (isNewRoute) {
+      map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50] });
+    }
+  }, [mapReady, route, multiRoute]);
 
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden bg-slate-950">
