@@ -180,7 +180,7 @@
 /* Leaflet Custom Map & Rotation Styling */
 .leaflet-container {
   font-family: inherit;
-  background-color: #0f172a;
+  background-color: #e5e3df;
 }
 
 .leaflet-popup-content-wrapper {
@@ -213,4 +213,14 @@
 .leaflet-rotate-pane {
   transition: none !important;
 }
+
+/* Hardware-accelerated smooth zoom transforms */
+.leaflet-tile-container {
+  will-change: transform;
+}
+
+.leaflet-tile {
+  will-change: transform, opacity;
+}
+
 
