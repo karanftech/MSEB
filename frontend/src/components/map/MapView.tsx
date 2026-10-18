@@ -474,6 +474,71 @@ export default function MapView({
           }
         }
 
+        // ── Circumscribed Tile Bounds (Eliminates Blank Corners on Rotated Maps) ──
+        // When a map is rotated, the viewport's corners reach out to the diagonal circle D = sqrt(w^2 + h^2).
+        // By default, Leaflet only requests an upright W x H tile box, which leaves rotated corners blank!
+        // We compute the circumscribed square with 1.25 overscan so 100% of the screen is covered at any angle.
+        if (L && (L as any).GridLayer) {
+          const gridLayerProto = (L as any).GridLayer.prototype;
+          gridLayerProto._getTiledPixelBounds = function (center: any) {
+            const map = this._map;
+            if (!map) return new (L as any).Bounds([0, 0], [0, 0]);
+
+            center = center || map.getCenter();
+            const mapZoom = map._animatingZoom ? Math.max(map._animateToZoom, map.getZoom()) : map.getZoom();
+            const scale = map.getZoomScale(mapZoom, this._tileZoom);
+            const pixelCenter = map.project(center, this._tileZoom).floor();
+            const size = map.getSize();
+
+            const diagonal = Math.sqrt(size.x * size.x + size.y * size.y);
+            const halfDim = Math.ceil(((diagonal / 2) * 1.25) / (scale || 1));
+            const halfSize = new (L as any).Point(halfDim, halfDim);
+
+            return new (L as any).Bounds(pixelCenter.subtract(halfSize), pixelCenter.add(halfSize));
+          };
+        }
+
+        // Patch Map._getNewPixelBounds and center-pivot coordinate transforms
+        if (L && (L.Map as any).prototype) {
+          const mapProto = (L.Map as any).prototype;
+          mapProto._getNewPixelBounds = function (center: any, zoom: number) {
+            center = center || this.getCenter();
+            zoom = zoom || this.getZoom();
+            const mapZoom = this._animatingZoom ? Math.max(this._animateToZoom, this.getZoom()) : this.getZoom();
+            const scale = this.getZoomScale(mapZoom, zoom);
+            const pixelCenter = this.project(center, zoom).floor();
+            const size = this.getSize();
+            const diagonal = Math.sqrt(size.x * size.x + size.y * size.y);
+            const halfDim = Math.ceil(((diagonal / 2) * 1.25) / (scale || 1));
+            const halfSize = new (L as any).Point(halfDim, halfDim);
+
+            return new (L as any).Bounds(pixelCenter.subtract(halfSize), pixelCenter.add(halfSize));
+          };
+
+          const origContainerToLayer = mapProto.containerPointToLayerPoint;
+          const origLayerToContainer = mapProto.layerPointToContainerPoint;
+
+          mapProto.containerPointToLayerPoint = function (point: any) {
+            if (!this._rotate || !this._bearing) {
+              return origContainerToLayer ? origContainerToLayer.apply(this, arguments) : point;
+            }
+            const pt = (L as any).point(point);
+            const mapPanePos = typeof this._getMapPanePos === 'function' ? this._getMapPanePos() : new (L as any).Point(0, 0);
+            const center = typeof this._getPixelCenter === 'function' ? this._getPixelCenter() : this.getSize().divideBy(2);
+            return pt.subtract(mapPanePos).subtract(center).rotate(-this._bearing).add(center);
+          };
+
+          mapProto.layerPointToContainerPoint = function (point: any) {
+            if (!this._rotate || !this._bearing) {
+              return origLayerToContainer ? origLayerToContainer.apply(this, arguments) : point;
+            }
+            const pt = (L as any).point(point);
+            const mapPanePos = typeof this._getMapPanePos === 'function' ? this._getMapPanePos() : new (L as any).Point(0, 0);
+            const center = typeof this._getPixelCenter === 'function' ? this._getPixelCenter() : this.getSize().divideBy(2);
+            return pt.subtract(center).rotate(this._bearing).add(center).add(mapPanePos);
+          };
+        }
+
         if (!isMounted || !mapContainerRef.current || leafletMapRef.current) return;
 
         const defaultLat = officerCoords?.latitude ?? 21.1458;
