@@ -5,7 +5,6 @@
 @layer base {
   html, body {
     @apply bg-slate-50 text-slate-900 font-sans antialiased selection:bg-blue-600 selection:text-white;
-    overscroll-behavior: none;
   }
 }
 
@@ -181,7 +180,7 @@
 /* Leaflet Custom Map & Rotation Styling */
 .leaflet-container {
   font-family: inherit;
-  background-color: #e5e3df;
+  background-color: #0f172a;
 }
 
 .leaflet-popup-content-wrapper {
@@ -214,14 +213,4 @@
 .leaflet-rotate-pane {
   transition: none !important;
 }
-
-/* Hardware-accelerated smooth zoom transforms */
-.leaflet-tile-container {
-  will-change: transform;
-}
-
-.leaflet-tile {
-  will-change: transform, opacity;
-}
-
 

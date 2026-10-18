@@ -122,8 +122,6 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 21,
       subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
       attribution: '&copy; Google Maps',
-      keepBuffer: 6,
-      updateWhenZooming: false,
     },
   },
   satellite: {
@@ -132,8 +130,6 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 21,
       subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
       attribution: '&copy; Google Maps',
-      keepBuffer: 6,
-      updateWhenZooming: false,
     },
   },
   hybrid: {
@@ -142,8 +138,6 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 21,
       subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
       attribution: '&copy; Google Maps',
-      keepBuffer: 6,
-      updateWhenZooming: false,
     },
   },
   terrain: {
@@ -152,8 +146,6 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 21,
       subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
       attribution: '&copy; Google Maps',
-      keepBuffer: 6,
-      updateWhenZooming: false,
     },
   },
   osm: {
@@ -161,8 +153,6 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
     options: {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
-      keepBuffer: 6,
-      updateWhenZooming: false,
     },
   },
 };
@@ -195,9 +185,6 @@ export default function MapView({
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
   const routePolylineCasingRef = useRef<any>(null);
   const routePolylineRef = useRef<any>(null);
-  const routeRendererRef = useRef<any>(null);
-  const syncRouteRef = useRef<(() => void) | null>(null);
-  const lastBearingSyncRef = useRef<number>(0);
   const lastDrawnRouteKeyRef = useRef<string>('');
   const LRef = useRef<any>(null);
 
@@ -294,254 +281,9 @@ export default function MapView({
 
         // Load leaflet-rotate plugin
         try {
-          if (typeof (L.Map.prototype as any).setBearing !== 'function') {
-            await import('leaflet-rotate');
-          }
+          await import('leaflet-rotate');
         } catch (rotErr) {
-          console.warn('leaflet-rotate dynamic import note:', rotErr);
-        }
-
-        // Fallback: If ESM import did not attach setBearing, load pre-bundled UMD script
-        if (typeof (L.Map.prototype as any).setBearing !== 'function') {
-          try {
-            await new Promise<void>((resolve) => {
-              const script = document.createElement('script');
-              script.src = '/leaflet-rotate.js';
-              script.onload = () => resolve();
-              script.onerror = () => resolve();
-              document.head.appendChild(script);
-            });
-          } catch (scriptErr) {
-            console.warn('leaflet-rotate script note:', scriptErr);
-          }
-        }
-
-        // ── Patch leaflet-rotate's TouchGestures with rock-solid Math.atan2 math ──
-        // This permanently eliminates leaflet-rotate's 180° flip singularity when fingers
-        // cross horizontal, allowing silky-smooth 360° two-finger rotation & pinch-zoom simultaneously.
-        if ((L.Map as any).TouchGestures) {
-          const TGProto = (L.Map as any).TouchGestures.prototype;
-
-          TGProto._onTouchStart = function (e: TouchEvent) {
-            const map = this._map;
-            if (!e.touches || e.touches.length !== 2 || map._animatingZoom || this._zooming || this._rotating) {
-              return;
-            }
-
-            const p1 = map.mouseEventToContainerPoint(e.touches[0]);
-            const p2 = map.mouseEventToContainerPoint(e.touches[1]);
-
-            this._centerPoint = map.getSize()._divideBy(2);
-            this._startLatLng = map.containerPointToLatLng(this._centerPoint);
-
-            if (this.zoom) {
-              if (map.options.touchZoom !== 'center') {
-                this._pinchStartLatLng = map.containerPointToLatLng(p1.add(p2)._divideBy(2));
-              }
-              this._startDist = p1.distanceTo(p2);
-              this._startZoom = map.getZoom();
-              this._zooming = true;
-            } else {
-              this._zooming = false;
-            }
-
-            if (this.rotate) {
-              this._startAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
-              this._startBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
-              this._hasRotatedPastDeadband = false;
-              this._rotating = true;
-            } else {
-              this._rotating = false;
-            }
-
-            this._moved = false;
-            map._stop();
-
-            L.DomEvent.on(document as any, 'touchmove', this._onTouchMove, this).on(
-              document as any,
-              'touchend touchcancel',
-              this._onTouchEnd,
-              this
-            );
-
-            L.DomEvent.preventDefault(e);
-          };
-
-          TGProto._onTouchMove = function (e: TouchEvent) {
-            if (!e.touches || e.touches.length !== 2 || !(this._zooming || this._rotating)) {
-              return;
-            }
-
-            const map = this._map;
-            const p1 = map.mouseEventToContainerPoint(e.touches[0]);
-            const p2 = map.mouseEventToContainerPoint(e.touches[1]);
-            const scale = p1.distanceTo(p2) / (this._startDist || 1);
-
-            let newBearing: number | null = null;
-            if (this._rotating && typeof map.setBearing === 'function') {
-              const currentAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
-              let angleDelta = currentAngle - this._startAngle;
-              if (angleDelta > 180) angleDelta -= 360;
-              if (angleDelta < -180) angleDelta += 360;
-
-              // 1.0 degree deadband: ensures pure pinch-zoom gestures don't micro-wobble the map angle
-              if (!this._hasRotatedPastDeadband) {
-                if (Math.abs(angleDelta) > 1.0) {
-                  this._hasRotatedPastDeadband = true;
-                }
-              }
-              if (this._hasRotatedPastDeadband) {
-                newBearing = this._startBearing + angleDelta;
-              }
-            }
-
-            if (this._zooming) {
-              this._zoom = map.getScaleZoom(scale, this._startZoom);
-              if (
-                !map.options.bounceAtZoomLimits &&
-                ((this._zoom < map.getMinZoom() && scale < 1) || (this._zoom > map.getMaxZoom() && scale > 1))
-              ) {
-                this._zoom = map._limitZoom(this._zoom);
-              }
-
-              if (map.options.touchZoom === 'center' || !this._pinchStartLatLng) {
-                this._center = this._startLatLng;
-                if (scale === 1 && newBearing === null) return;
-              } else {
-                const delta = p1._add(p2)._divideBy(2)._subtract(this._centerPoint);
-                if (scale === 1 && delta.x === 0 && delta.y === 0 && newBearing === null) return;
-                const currentMapBearing = newBearing !== null ? newBearing : (typeof map.getBearing === 'function' ? map.getBearing() : 0);
-                const alpha = -currentMapBearing * (L as any).DomUtil.DEG_TO_RAD;
-                const rotatedDelta = delta.rotate(alpha);
-                this._center = map.unproject(
-                  map.project(this._pinchStartLatLng, this._zoom).subtract(rotatedDelta),
-                  this._zoom
-                );
-              }
-            }
-
-            if (!this._moved) {
-              map._moveStart(true, false);
-              this._moved = true;
-            }
-
-            (L as any).Util.cancelAnimFrame(this._animRequest);
-            const moveFn = () => {
-              if (newBearing !== null && typeof map.setBearing === 'function') {
-                map.setBearing(newBearing);
-              }
-              map._move(this._center, this._zoom, { pinch: true, round: false }, undefined);
-            };
-            this._animRequest = (L as any).Util.requestAnimFrame(moveFn, this, true);
-
-            L.DomEvent.preventDefault(e);
-          };
-
-          TGProto._onTouchEnd = function () {
-            if (!this._moved || !(this._zooming || this._rotating)) {
-              this._zooming = false;
-              this._rotating = false;
-              return;
-            }
-
-            this._zooming = false;
-            this._rotating = false;
-            (L as any).Util.cancelAnimFrame(this._animRequest);
-
-            L.DomEvent.off(document as any, 'touchmove', this._onTouchMove, this).off(
-              document as any,
-              'touchend touchcancel',
-              this._onTouchEnd,
-              this
-            );
-
-            if (this.zoom) {
-              const targetZoom = this._map._limitZoom(this._zoom);
-              if (this._map.options.zoomAnimation && Math.abs(targetZoom - this._map.getZoom()) > 0.25) {
-                this._map._animateZoom(this._center, targetZoom, true, this._map.options.zoomSnap);
-              } else {
-                this._map._resetView(this._center, targetZoom);
-              }
-            }
-          };
-        }
-
-        // Patch L.Renderer._updateTransform so SVG route polylines scale smoothly without drift during zoom animation
-        if (L && (L as any).Renderer) {
-          const rendererProto = (L as any).Renderer.prototype;
-          if (rendererProto) {
-            rendererProto._updateTransform = function (center: any, zoom: number) {
-              if (!this._map) return;
-              const scale = this._map.getZoomScale(zoom, this._zoom);
-              const position = (L as any).DomUtil.getPosition(this._container) || new (L as any).Point(0, 0);
-              (L as any).DomUtil.setTransform(this._container, position, scale);
-            };
-          }
-        }
-
-        // ── Circumscribed Tile Bounds (Eliminates Blank Corners on Rotated Maps) ──
-        // When a map is rotated, the viewport's corners reach out to the diagonal circle D = sqrt(w^2 + h^2).
-        // By default, Leaflet only requests an upright W x H tile box, which leaves rotated corners blank!
-        // We compute the circumscribed square with 1.25 overscan so 100% of the screen is covered at any angle.
-        if (L && (L as any).GridLayer) {
-          const gridLayerProto = (L as any).GridLayer.prototype;
-          gridLayerProto._getTiledPixelBounds = function (center: any) {
-            const map = this._map;
-            if (!map) return new (L as any).Bounds([0, 0], [0, 0]);
-
-            center = center || map.getCenter();
-            const mapZoom = map._animatingZoom ? Math.max(map._animateToZoom, map.getZoom()) : map.getZoom();
-            const scale = map.getZoomScale(mapZoom, this._tileZoom);
-            const pixelCenter = map.project(center, this._tileZoom).floor();
-            const size = map.getSize();
-
-            const diagonal = Math.sqrt(size.x * size.x + size.y * size.y);
-            const halfDim = Math.ceil(((diagonal / 2) * 1.25) / (scale || 1));
-            const halfSize = new (L as any).Point(halfDim, halfDim);
-
-            return new (L as any).Bounds(pixelCenter.subtract(halfSize), pixelCenter.add(halfSize));
-          };
-        }
-
-        // Patch Map._getNewPixelBounds and center-pivot coordinate transforms
-        if (L && (L.Map as any).prototype) {
-          const mapProto = (L.Map as any).prototype;
-          mapProto._getNewPixelBounds = function (center: any, zoom: number) {
-            center = center || this.getCenter();
-            zoom = zoom || this.getZoom();
-            const mapZoom = this._animatingZoom ? Math.max(this._animateToZoom, this.getZoom()) : this.getZoom();
-            const scale = this.getZoomScale(mapZoom, zoom);
-            const pixelCenter = this.project(center, zoom).floor();
-            const size = this.getSize();
-            const diagonal = Math.sqrt(size.x * size.x + size.y * size.y);
-            const halfDim = Math.ceil(((diagonal / 2) * 1.25) / (scale || 1));
-            const halfSize = new (L as any).Point(halfDim, halfDim);
-
-            return new (L as any).Bounds(pixelCenter.subtract(halfSize), pixelCenter.add(halfSize));
-          };
-
-          const origContainerToLayer = mapProto.containerPointToLayerPoint;
-          const origLayerToContainer = mapProto.layerPointToContainerPoint;
-
-          mapProto.containerPointToLayerPoint = function (point: any) {
-            if (!this._rotate || !this._bearing) {
-              return origContainerToLayer ? origContainerToLayer.apply(this, arguments) : point;
-            }
-            const pt = (L as any).point(point);
-            const mapPanePos = typeof this._getMapPanePos === 'function' ? this._getMapPanePos() : new (L as any).Point(0, 0);
-            const center = typeof this._getPixelCenter === 'function' ? this._getPixelCenter() : this.getSize().divideBy(2);
-            return pt.subtract(mapPanePos).subtract(center).rotate(-this._bearing).add(center);
-          };
-
-          mapProto.layerPointToContainerPoint = function (point: any) {
-            if (!this._rotate || !this._bearing) {
-              return origLayerToContainer ? origLayerToContainer.apply(this, arguments) : point;
-            }
-            const pt = (L as any).point(point);
-            const mapPanePos = typeof this._getMapPanePos === 'function' ? this._getMapPanePos() : new (L as any).Point(0, 0);
-            const center = typeof this._getPixelCenter === 'function' ? this._getPixelCenter() : this.getSize().divideBy(2);
-            return pt.subtract(center).rotate(this._bearing).add(center).add(mapPanePos);
-          };
+          console.warn('Leaflet-Rotate plugin note:', rotErr);
         }
 
         if (!isMounted || !mapContainerRef.current || leafletMapRef.current) return;
@@ -549,76 +291,26 @@ export default function MapView({
         const defaultLat = officerCoords?.latitude ?? 21.1458;
         const defaultLng = officerCoords?.longitude ?? 79.0882;
 
-        // Initialize Leaflet map with continuous 360° rotation and fluid non-quantized zoom
+        // Initialize Leaflet map with 360° rotation enabled
         const map = (L as any).map(mapContainerRef.current, {
           center: [defaultLat, defaultLng],
           zoom: 16,
           rotate: true,
           bearing: officerHeading || 0,
-          touchRotate: true,
+          touchRotate: false, // Managed by our high-performance RAF gesture controller
           touchZoom: true,
-          bounceAtZoomLimits: false, // Prevents rubber-banding/bouncing beyond zoom boundaries
-          zoomSnap: 0, // Continuous fractional zoom - eliminates chunky integer snapping
-          zoomDelta: 0.5, // Refined 0.5 zoom steps for + / - buttons
-          wheelPxPerZoomLevel: 120, // Gentle, controlled trackpad & wheel zooming
-          zoomAnimation: true, // Hardware-accelerated CSS tile scaling during zoom
-          zoomAnimationThreshold: 4,
-          fadeAnimation: true,
-          markerZoomAnimation: true,
           shiftKeyRotate: true,
           rotateControl: false,
           zoomControl: false,
           attributionControl: false,
         });
 
-        // Initialize the renderer used for route polylines.
-        // SVG (not Canvas) is deliberate: the SVG root lives in the rotated overlayPane and its
-        // geometry is expressed in layer coordinates, so it inherits the exact same CSS transform
-        // as the tiles. A Canvas renderer instead bakes rotation into its own b.min/ctx.translate
-        // bookkeeping, which is what let the route drift away from the roads on zoom.
-        routeRendererRef.current = (L as any).svg({ padding: 0.5 });
-
-        // Keep routes locked to the tiles. leaflet-rotate only ever emits `rotate`
-        // (there is no `rotateend` in v0.2.8), so sync on `rotate` + the usual move/zoom events.
-        let lastSyncTime = 0;
-        const syncRoute = () => {
-          const now = performance.now();
-          if (now - lastSyncTime < 32) return;
-          lastSyncTime = now;
-          if (routePolylineRef.current && typeof routePolylineRef.current.redraw === 'function') {
-            routePolylineRef.current.redraw();
-          }
-          if (routePolylineCasingRef.current && typeof routePolylineCasingRef.current.redraw === 'function') {
-            routePolylineCasingRef.current.redraw();
-          }
-        };
-
-        const syncRouteImmediate = () => {
-          if (routePolylineRef.current && typeof routePolylineRef.current.redraw === 'function') {
-            routePolylineRef.current.redraw();
-          }
-          if (routePolylineCasingRef.current && typeof routePolylineCasingRef.current.redraw === 'function') {
-            routePolylineCasingRef.current.redraw();
-          }
-        };
-
-        map.on('rotate', syncRoute);
-        map.on('zoomend', syncRouteImmediate);
-        map.on('moveend', syncRouteImmediate);
-        map.on('viewreset', syncRouteImmediate);
-        syncRouteRef.current = syncRouteImmediate;
-
         // Set tile layer
         const layerConfig = TILE_LAYERS['roadmap'];
         tileLayerRef.current = L.tileLayer(layerConfig.url, layerConfig.options).addTo(map);
 
-        // Sync bearing state so the compass stays accurate.
-        // The plugin emits `rotate` on every setBearing() call, so throttle the React state
-        // update to keep the UI responsive during a continuous LERP rotation.
-        map.on('rotate', () => {
-          const now = performance.now();
-          if (now - lastBearingSyncRef.current < 100) return;
-          lastBearingSyncRef.current = now;
+        // Sync bearing on rotateend to avoid thrashing React state on every frame
+        map.on('rotateend', () => {
           const bearing = typeof (map as any).getBearing === 'function' ? (map as any).getBearing() : 0;
           setCurrentBearing(bearing);
         });
@@ -655,8 +347,121 @@ export default function MapView({
           }
         });
 
-        // ── Desktop Shift+Drag or Alt+Drag smooth rotate ──
+        // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
         const container = mapContainerRef.current;
+        let isTwoFingerRotating = false;
+        let hasRotatedPastThreshold = false;
+        let lastTouchAngle = 0;
+        let accumulatedDiff = 0;
+        let targetBearing = officerHeading || 0;
+        let currentRenderBearing = targetBearing;
+        let touchRafId: number | null = null;
+        let lastTouchUiSync = 0;
+
+        const calcTouchAngle = (t1: Touch, t2: Touch): number => {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.atan2(dy, dx) * (180 / Math.PI);
+        };
+
+        const stepRotation = () => {
+          let diff = targetBearing - currentRenderBearing;
+          if (diff > 180) diff -= 360;
+          if (diff < -180) diff += 360;
+
+          // If almost reached target and fingers lifted, snap and complete
+          if (!isTwoFingerRotating && Math.abs(diff) < 0.2) {
+            currentRenderBearing = targetBearing;
+            if (typeof map.setBearing === 'function') {
+              map.setBearing(currentRenderBearing);
+            }
+            touchRafId = null;
+            return;
+          }
+
+          // LERP damping factor (0.42) produces continuous, fluid rotation without jitter
+          currentRenderBearing = (currentRenderBearing + diff * 0.42 + 360) % 360;
+          if (typeof map.setBearing === 'function') {
+            map.setBearing(currentRenderBearing);
+          }
+
+          touchRafId = requestAnimationFrame(stepRotation);
+        };
+
+        const handleTouchStart = (e: TouchEvent) => {
+          if (e.touches.length === 2) {
+            isTwoFingerRotating = true;
+            hasRotatedPastThreshold = false;
+            accumulatedDiff = 0;
+            lastTouchAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            const liveBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            targetBearing = liveBearing;
+            currentRenderBearing = liveBearing;
+          } else {
+            isTwoFingerRotating = false;
+            hasRotatedPastThreshold = false;
+          }
+        };
+
+        const handleTouchMove = (e: TouchEvent) => {
+          if (isTwoFingerRotating && e.touches.length === 2) {
+            // Prevent default browser viewport zoom/pan gesture conflict
+            if (e.cancelable) {
+              e.preventDefault();
+            }
+
+            const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            let delta = currentAngle - lastTouchAngle;
+
+            // Normalize delta to [-180, 180] degrees (eliminates any 180/-180 wrap-around jump)
+            if (delta > 180) delta -= 360;
+            if (delta < -180) delta += 360;
+            lastTouchAngle = currentAngle;
+
+            // Small 1.5° deadzone: distinguishes intentional rotation from accidental pinch tremor
+            if (!hasRotatedPastThreshold) {
+              accumulatedDiff += delta;
+              if (Math.abs(accumulatedDiff) >= 1.5) {
+                hasRotatedPastThreshold = true;
+                if (map.dragging && map.dragging.enabled()) {
+                  map.dragging.disable();
+                }
+              } else {
+                return;
+              }
+            }
+
+            // Rotate clockwise when fingers move/twist to the right
+            targetBearing = (targetBearing + delta + 360) % 360;
+
+            if (!touchRafId) {
+              touchRafId = requestAnimationFrame(stepRotation);
+            }
+
+            // Throttle React state updates to 100ms so UI never lags
+            const now = performance.now();
+            if (now - lastTouchUiSync > 100) {
+              lastTouchUiSync = now;
+              setCurrentBearing(targetBearing);
+            }
+          }
+        };
+
+        const handleTouchEnd = (e: TouchEvent) => {
+          if (e.touches.length < 2) {
+            if (isTwoFingerRotating) {
+              isTwoFingerRotating = false;
+              hasRotatedPastThreshold = false;
+              if (map.dragging && !map.dragging.enabled()) {
+                map.dragging.enable();
+              }
+              const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : targetBearing;
+              setCurrentBearing(finalBearing);
+            }
+          }
+        };
+
+        // Desktop Shift+Drag or Alt+Drag smooth rotate
         let isShiftDragging = false;
         let lastShiftX = 0;
         let shiftTargetBearing = 0;
@@ -724,11 +529,19 @@ export default function MapView({
         };
 
         if (container) {
+          container.addEventListener('touchstart', handleTouchStart, { passive: true });
+          container.addEventListener('touchmove', handleTouchMove, { passive: false });
+          container.addEventListener('touchend', handleTouchEnd, { passive: true });
+          container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
           container.addEventListener('mousedown', handleMouseDown);
           window.addEventListener('mousemove', handleMouseMove);
           window.addEventListener('mouseup', handleMouseUp);
 
           cleanUpTouchListeners = () => {
+            container.removeEventListener('touchstart', handleTouchStart);
+            container.removeEventListener('touchmove', handleTouchMove);
+            container.removeEventListener('touchend', handleTouchEnd);
+            container.removeEventListener('touchcancel', handleTouchEnd);
             container.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
@@ -1018,28 +831,17 @@ export default function MapView({
     lastDrawnRouteKeyRef.current = routeKey;
 
     if (routePolylineRef.current && routePolylineCasingRef.current) {
-      // Update coordinates on existing layers without DOM teardown
+      // Update coordinates on existing SVG layers without DOM teardown
       routePolylineCasingRef.current.setLatLngs(latLngs);
       routePolylineRef.current.setLatLngs(latLngs);
-      if (typeof routePolylineRef.current.redraw === 'function') {
-        routePolylineRef.current.redraw();
-      }
-      if (typeof routePolylineCasingRef.current.redraw === 'function') {
-        routePolylineCasingRef.current.redraw();
-      }
     } else {
-      if (!routeRendererRef.current && L) {
-        routeRendererRef.current = (L as any).svg({ padding: 0.5 });
-      }
-
-      // Create new polyline layers sharing one SVG renderer bound to the rotated overlay pane
+      // Create new polyline layers if not existing
       routePolylineCasingRef.current = L.polyline(latLngs, {
         color: '#0284c7',
         weight: 8,
         opacity: 0.45,
         lineCap: 'round',
         lineJoin: 'round',
-        renderer: routeRendererRef.current,
       }).addTo(map);
 
       routePolylineRef.current = L.polyline(latLngs, {
@@ -1048,7 +850,6 @@ export default function MapView({
         opacity: 0.95,
         lineCap: 'round',
         lineJoin: 'round',
-        renderer: routeRendererRef.current,
       }).addTo(map);
     }
 
