@@ -81,6 +81,7 @@ function MapPageContent() {
 
   // Payment & Receipt Modals
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
+  const [paymentModalCustomer, setPaymentModalCustomer] = useState<Customer | null>(null);
   const [completedPayment, setCompletedPayment] = useState<PaymentRecord | null>(null);
 
   // Temporary removal of collected meters from map
@@ -372,11 +373,13 @@ function MapPageContent() {
   );
 
   const handleCollectPaymentModalOpen = React.useCallback((customer?: Customer) => {
-    if (customer) {
-      setSelectedCustomer(customer);
+    const target = customer || selectedCustomer || navTargetCustomer;
+    if (target) {
+      setSelectedCustomer(target);
+      setPaymentModalCustomer(target);
     }
     setIsPaymentModalOpen(true);
-  }, []);
+  }, [selectedCustomer, navTargetCustomer]);
 
 
 
@@ -460,9 +463,12 @@ function MapPageContent() {
       {/* Payment Collection Modal */}
       <PaymentModal
         isOpen={isPaymentModalOpen}
-        customer={selectedCustomer || navTargetCustomer}
+        customer={paymentModalCustomer || selectedCustomer || navTargetCustomer}
         officerCoords={officerCoords}
-        onClose={() => setIsPaymentModalOpen(false)}
+        onClose={() => {
+          setIsPaymentModalOpen(false);
+          setPaymentModalCustomer(null);
+        }}
         onSuccess={handlePaymentSuccess}
       />
 

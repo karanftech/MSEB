@@ -203,6 +203,8 @@ export interface OfficerDashboardMetrics {
   bur_pending_amount?: number;
   dis_customers_count?: number;
   dis_pending_amount?: number;
+  other_customers_count?: number;
+  other_pending_amount?: number;
   nearby_pending_customers: NearbyCustomer[];
 }
 
@@ -245,7 +247,7 @@ export type GeoPoint = {
   lng: number;
 };
 
-export type MapLayerType = 'roadmap' | 'satellite' | 'hybrid' | 'terrain';
+export type MapLayerType = 'roadmap' | 'satellite' | 'hybrid' | 'terrain' | 'osm';
 
 export interface NavigationState {
   active: boolean;

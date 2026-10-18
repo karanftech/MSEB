@@ -280,7 +280,8 @@ export default function MapFilters({
                     key={opt.key}
                     type="button"
                     onClick={() => {
-                      onFilterChange({ ...filters, overduePeriod: opt.key });
+                      const next = isSelected && opt.key !== 'all' ? 'all' : opt.key;
+                      onFilterChange({ ...filters, overduePeriod: next });
                     }}
                     className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer border ${
                       isSelected
@@ -317,7 +318,8 @@ export default function MapFilters({
                     key={opt.key}
                     type="button"
                     onClick={() => {
-                      onFilterChange({ ...filters, outstandingAmount: opt.key });
+                      const next = isSelected && opt.key !== 'all' ? 'all' : opt.key;
+                      onFilterChange({ ...filters, outstandingAmount: next });
                     }}
                     className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer border ${
                       isSelected
@@ -387,7 +389,7 @@ export default function MapFilters({
                     <button
                       key={dtc.code}
                       type="button"
-                      onClick={() => onFilterChange({ ...filters, dtcCode: dtc.code })}
+                      onClick={() => onFilterChange({ ...filters, dtcCode: isSelected ? 'all' : dtc.code })}
                       className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer border flex items-center gap-1.5 ${
                         isSelected
                           ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'

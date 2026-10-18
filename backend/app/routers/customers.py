@@ -537,6 +537,7 @@ async def upload_customers_bulk(
 
     user_id_str = str(current_user["_id"])
     officer_id = None
+    officer_name = current_user.get("full_name") or current_user.get("name")
     res = await db.execute(select(Officer).where(
         or_(
             Officer.user_id == user_id_str,
@@ -546,13 +547,17 @@ async def upload_customers_bulk(
     officer_doc = res.scalar_one_or_none()
     if officer_doc:
         officer_id = officer_doc.officer_id
+        officer_name = officer_doc.full_name or officer_name
+    elif current_user.get("officer_id"):
+        officer_id = current_user.get("officer_id")
 
     result = await CustomerImportService.import_customers(
         file=file,
         db=db,
         uploader_officer_id=officer_id,
         user_id_str=user_id_str,
-        replace_all=replace_all
+        replace_all=replace_all,
+        uploader_officer_name=officer_name
     )
     await invalidate_customer_caches()
     return result

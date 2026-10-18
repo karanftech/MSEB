@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Crosshair, Layers, Maximize2, Plus, Minus, Check, Menu, X, Volume2, VolumeX, Compass, Box } from 'lucide-react';
+import { Crosshair, Layers, Maximize2, Plus, Minus, Check, Menu, X, Volume2, VolumeX, Compass, Box, CircleDot, MapPin } from 'lucide-react';
 import { MapLayerType } from '@/types';
 
 interface MapControlsProps {
   currentLayer: MapLayerType;
+  markerStyle?: 'dot' | 'pin';
+  onToggleMarkerStyle?: () => void;
   isFollowing: boolean;
   is3D?: boolean;
   officerHeading?: number | null;
@@ -22,6 +24,8 @@ interface MapControlsProps {
 
 export default function MapControls({
   currentLayer,
+  markerStyle = 'dot',
+  onToggleMarkerStyle,
   isFollowing,
   is3D,
   officerHeading,
@@ -52,10 +56,11 @@ export default function MapControls({
   }, []);
 
   const layerOptions: { type: MapLayerType; label: string }[] = [
-    { type: 'roadmap', label: 'Default Map' },
-    { type: 'satellite', label: 'Satellite' },
-    { type: 'hybrid', label: 'Hybrid' },
-    { type: 'terrain', label: 'Terrain' },
+    { type: 'roadmap', label: 'Google Maps' },
+    { type: 'satellite', label: 'Google Satellite' },
+    { type: 'hybrid', label: 'Google Hybrid' },
+    { type: 'terrain', label: 'Google Terrain' },
+    { type: 'osm', label: 'OpenStreetMap' },
   ];
 
   // List of separate action controls (ordered top-to-bottom)
@@ -106,6 +111,26 @@ export default function MapControls({
         </div>
       ),
     },
+    ...(onToggleMarkerStyle
+      ? [
+          {
+            id: 'markerStyle',
+            node: (
+              <button
+                onClick={onToggleMarkerStyle}
+                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200 ease-out hover:scale-110 active:scale-95 cursor-pointer shadow-lg border ${
+                  markerStyle === 'dot'
+                    ? 'bg-amber-500 text-white border-amber-400 ring-2 ring-amber-300/50'
+                    : 'bg-white/95 text-slate-700 border-slate-200 hover:bg-slate-50 hover:text-amber-600'
+                }`}
+                title={markerStyle === 'dot' ? 'Marker Style: Google Dot (Click for Pin)' : 'Marker Style: Meter Pin (Click for Dot)'}
+              >
+                {markerStyle === 'dot' ? <CircleDot className="w-4 h-4" /> : <MapPin className="w-4 h-4" />}
+              </button>
+            ),
+          },
+        ]
+      : []),
     {
       id: 'recenter',
       node: (

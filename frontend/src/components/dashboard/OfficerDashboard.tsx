@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Users, DollarSign, FileText, CheckCircle2, Target, Navigation, Clock, ChevronRight, Zap, Upload, AlertTriangle, ShieldAlert, Flame, PowerOff } from 'lucide-react';
+import { Users, DollarSign, FileText, CheckCircle2, Target, Navigation, Clock, ChevronRight, Zap, Upload, AlertTriangle, ShieldAlert, Flame, PowerOff, Tag } from 'lucide-react';
 import { OfficerDashboardMetrics, NearbyCustomer, Customer, PaymentRecord } from '@/types';
 import { formatCurrency, formatDistance, formatDuration } from '@/utils/formatters';
 import api from '@/services/api';
@@ -21,7 +21,7 @@ export default function OfficerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [isAssignedModalOpen, setIsAssignedModalOpen] = useState<boolean>(false);
-  const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | null>(null);
+  const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null>(null);
   const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null);
   const [receiptRecord, setReceiptRecord] = useState<PaymentRecord | null>(null);
 
@@ -266,7 +266,7 @@ export default function OfficerDashboard() {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
           {/* Card 1: TD (Temporary Disconnect) */}
           <button
             type="button"
@@ -382,6 +382,36 @@ export default function OfficerDashboard() {
                 </span>
                 <span className="text-xs font-extrabold text-indigo-600">
                   {formatCurrency(metrics.dis_pending_amount || 0)}
+                </span>
+              </div>
+            </div>
+          </button>
+
+          {/* Card 5: OTHER (Other Action / Status Mode) */}
+          <button
+            type="button"
+            onClick={() => setStatusModalType('OTHER')}
+            className="bg-white border border-purple-200/90 hover:border-purple-400 p-4 rounded-xl shadow-2xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-purple-500"
+            title="Click to view all Other Action / Status consumers"
+          >
+            <div className="flex items-center justify-between">
+              <div className="w-8 h-8 rounded-lg bg-purple-50 group-hover:bg-purple-600 text-purple-600 group-hover:text-white transition-colors flex items-center justify-center">
+                <Tag className="w-4 h-4" />
+              </div>
+              <span className="text-[10px] font-extrabold text-purple-700 bg-purple-50 group-hover:bg-purple-100 px-2 py-0.5 rounded-full border border-purple-200 transition-colors flex items-center gap-0.5">
+                View List <ChevronRight className="w-3 h-3 inline" />
+              </span>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500 group-hover:text-purple-900 font-bold uppercase transition-colors">
+                OTHER (Action / Status)
+              </p>
+              <div className="flex items-baseline justify-between mt-1">
+                <span className="text-2xl font-black text-slate-900 group-hover:text-purple-700 transition-colors">
+                  {metrics.other_customers_count || 0}
+                </span>
+                <span className="text-xs font-extrabold text-purple-600">
+                  {formatCurrency(metrics.other_pending_amount || 0)}
                 </span>
               </div>
             </div>

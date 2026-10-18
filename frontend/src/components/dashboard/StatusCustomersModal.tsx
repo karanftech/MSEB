@@ -1,12 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import Link from 'next/link';
 import {
   X,
   Search,
-  Navigation,
-  CreditCard,
   Phone,
   MapPin,
   Clock,
@@ -16,16 +13,17 @@ import {
   FileText,
   ShieldAlert,
   PowerOff,
+  Tag,
 } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { Customer } from '@/types';
 import { customerService } from '@/services/customerService';
-import { formatCurrency, formatDate, getOverdueDays } from '@/utils/formatters';
+import { formatCurrency, formatDate, getCustomerEffectiveOverdueDays } from '@/utils/formatters';
 
 interface StatusCustomersModalProps {
   isOpen: boolean;
   onClose: () => void;
-  statusType: 'TD' | 'PD' | 'BUR' | 'DIS' | null;
+  statusType: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null;
   onCollectPayment?: (customer: Customer) => void;
 }
 
@@ -64,6 +62,14 @@ const STATUS_CONFIG: Record<
     bg: 'bg-indigo-50',
     border: 'border-indigo-300',
     icon: PowerOff,
+  },
+  OTHER: {
+    label: 'OTHER',
+    fullTitle: 'Other Action / Status Mode Consumers',
+    color: 'text-purple-700',
+    bg: 'bg-purple-50',
+    border: 'border-purple-300',
+    icon: Tag,
   },
 };
 
@@ -218,7 +224,7 @@ export default function StatusCustomersModal({
         ) : (
           <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
             {filteredList.map((cus) => {
-              const overdueDays = getOverdueDays(cus.due_date);
+              const overdueDays = getCustomerEffectiveOverdueDays(cus);
               return (
                 <div
                   key={cus.customer_id}
@@ -270,32 +276,6 @@ export default function StatusCustomersModal({
                         </span>
                       )}
                     </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                    <Link
-                      href={`/map?customer_id=${cus.customer_id}&navigate=true`}
-                      className="px-3 py-2 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs flex items-center gap-1.5 transition-colors"
-                      title="Navigate to meter on interactive map"
-                    >
-                      <Navigation className="w-3.5 h-3.5 fill-blue-700 stroke-none" />
-                      <span>Map</span>
-                    </Link>
-
-                    {onCollectPayment && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClose();
-                          onCollectPayment(cus);
-                        }}
-                        className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-2xs flex items-center gap-1.5 transition-colors cursor-pointer"
-                      >
-                        <CreditCard className="w-3.5 h-3.5" />
-                        <span>Collect / Action</span>
-                      </button>
-                    )}
                   </div>
                 </div>
               );

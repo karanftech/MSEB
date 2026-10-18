@@ -107,7 +107,7 @@ async def get_officer_dashboard(
         remaining_collections_amount = max(0.0, total_pending_amount)
 
         # Categorized disconnection statuses
-        categories = {"TD": [0, 0.0], "PD": [0, 0.0], "BUR": [0, 0.0], "DIS": [0, 0.0]}
+        categories = {"TD": [0, 0.0], "PD": [0, 0.0], "BUR": [0, 0.0], "DIS": [0, 0.0], "OTHER": [0, 0.0]}
         for cat in categories.keys():
             cat_conds = [
                 or_(
@@ -153,6 +153,8 @@ async def get_officer_dashboard(
             bur_pending_amount=round(categories["BUR"][1], 2),
             dis_customers_count=categories["DIS"][0],
             dis_pending_amount=round(categories["DIS"][1], 2),
+            other_customers_count=categories["OTHER"][0],
+            other_pending_amount=round(categories["OTHER"][1], 2),
             nearby_pending_customers=nearby
         )
         await cache_service.set(cache_key, metrics.model_dump(), ttl=60)

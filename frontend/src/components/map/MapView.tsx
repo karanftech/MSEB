@@ -40,7 +40,8 @@ function buildConsumerMarkerHtml(
   priority: string | undefined,
   isSelected: boolean,
   sequence?: number,
-  meterNumber?: string
+  meterNumber?: string,
+  markerStyle: 'dot' | 'pin' = 'dot'
 ): string {
   const colorMap: Record<string, string> = {
     overdue: '#ef4444',
@@ -49,8 +50,21 @@ function buildConsumerMarkerHtml(
     paid: '#22c55e',
   };
   const priorityColor = priority === 'critical' ? '#dc2626' : priority === 'high' ? '#f97316' : null;
-  const baseColor = isSelected ? '#0284c7' : priorityColor || colorMap[status] || '#64748b';
+  const baseColor = isSelected ? '#0284c7' : priorityColor || colorMap[status] || '#f59e0b';
 
+  // 1. Google Maps Minimalist Dot Marker (Matches Google Maps clean aesthetic)
+  if (markerStyle === 'dot') {
+    return `
+      <div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+        ${isSelected ? `<div style="position: absolute; width: 34px; height: 34px; border-radius: 50%; background: ${baseColor}; opacity: 0.35; animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>` : ''}
+        <div style="width: 20px; height: 20px; border-radius: 50%; background: ${baseColor}; border: 3px solid #ffffff; box-shadow: 0 2px 8px rgba(0,0,0,0.38); display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease-out; ${isSelected ? 'transform: scale(1.25);' : ''}">
+          ${sequence !== undefined ? `<span style="color: #ffffff; font-size: 10px; font-weight: 900; font-family: system-ui, sans-serif; line-height: 1;">${sequence}</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  // 2. Full Classic Meter Pin with Badge
   const meterText = meterNumber
     ? meterNumber.startsWith('MTR') ? meterNumber : `MTR-${meterNumber.slice(-6)}`
     : '';
@@ -100,23 +114,46 @@ function buildOfficerMarkerHtml(heading: number | null | undefined): string {
   `;
 }
 
-// Tile Layer URLs
+// Tile Layer URLs - Google Maps Base Layers with OpenStreetMap Fallback
 const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
   roadmap: {
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    options: { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' },
+    url: 'https://{s}.google.com/vt/lyrs=m&hl=en-IN&gl=IN&x={x}&y={y}&z={z}',
+    options: {
+      maxZoom: 21,
+      subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+      attribution: '&copy; Google Maps',
+    },
   },
   satellite: {
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    options: { maxZoom: 19, attribution: 'Tiles &copy; Esri' },
+    url: 'https://{s}.google.com/vt/lyrs=s&hl=en-IN&gl=IN&x={x}&y={y}&z={z}',
+    options: {
+      maxZoom: 21,
+      subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+      attribution: '&copy; Google Maps',
+    },
   },
   hybrid: {
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    options: { maxZoom: 19, attribution: 'Tiles &copy; Esri' },
+    url: 'https://{s}.google.com/vt/lyrs=y&hl=en-IN&gl=IN&x={x}&y={y}&z={z}',
+    options: {
+      maxZoom: 21,
+      subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+      attribution: '&copy; Google Maps',
+    },
   },
   terrain: {
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    options: { maxZoom: 17, attribution: '&copy; OpenTopoMap' },
+    url: 'https://{s}.google.com/vt/lyrs=p&hl=en-IN&gl=IN&x={x}&y={y}&z={z}',
+    options: {
+      maxZoom: 21,
+      subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+      attribution: '&copy; Google Maps',
+    },
+  },
+  osm: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors',
+    },
   },
 };
 
@@ -153,6 +190,7 @@ export default function MapView({
 
   const [mapReady, setMapReady] = useState<boolean>(false);
   const [currentLayer, setCurrentLayer] = useState<MapLayerType>('roadmap');
+  const [markerStyle, setMarkerStyle] = useState<'dot' | 'pin'>('dot');
   const [isFollowingInternal, setIsFollowingInternal] = useState<boolean>(false);
   const [currentBearing, setCurrentBearing] = useState<number>(officerHeading || 0);
   const [isMutedInternal, setIsMutedInternal] = useState<boolean>(false);
@@ -166,35 +204,52 @@ export default function MapView({
   const customersRef = useRef(customers);
   customersRef.current = customers;
 
+  const selectedCustomerRef = useRef(selectedCustomer);
+  selectedCustomerRef.current = selectedCustomer;
+
+  const findCustomer = React.useCallback((idOrCustId?: string | null): Customer | undefined => {
+    if (!idOrCustId) return selectedCustomerRef.current || undefined;
+    const targetId = String(idOrCustId).trim();
+    return (
+      customersRef.current.find(
+        (c) =>
+          String(c.customer_id).trim() === targetId ||
+          String(c.id).trim() === targetId ||
+          String(c.meter_number).trim() === targetId
+      ) ||
+      selectedCustomerRef.current ||
+      undefined
+    );
+  }, []);
+
   // Global & Delegated listener for Leaflet popup Collect Payment button
   useEffect(() => {
-    (window as any).__mvCollectPayment = (customerId: string) => {
-      const cust = customersRef.current.find((c) => c.customer_id === customerId);
+    (window as any).__mvCollectPayment = (customerId?: string) => {
+      const cust = findCustomer(customerId);
       if (cust && onCollectPaymentRef.current) {
         onCollectPaymentRef.current(cust);
       }
     };
 
-    const container = mapContainerRef.current;
-    if (!container) return;
-
     const handleContainerCollectClick = (e: MouseEvent | TouchEvent) => {
-      const target = (e.target as HTMLElement)?.closest('[data-collect-customer-id]');
+      const target = (e.target as HTMLElement)?.closest('[data-collect-customer-id], .leaflet-collect-btn');
       if (target) {
+        e.preventDefault();
         e.stopPropagation();
-        const customerId = target.getAttribute('data-collect-customer-id');
-        if (customerId && (window as any).__mvCollectPayment) {
-          (window as any).__mvCollectPayment(customerId);
+        const customerId = target.getAttribute('data-collect-customer-id') || target.getAttribute('data-meter-number');
+        if ((window as any).__mvCollectPayment) {
+          (window as any).__mvCollectPayment(customerId || undefined);
         }
       }
     };
 
-    container.addEventListener('click', handleContainerCollectClick, true);
+    document.addEventListener('click', handleContainerCollectClick, true);
+    document.addEventListener('touchend', handleContainerCollectClick, true);
     return () => {
-      container.removeEventListener('click', handleContainerCollectClick, true);
-      delete (window as any).__mvCollectPayment;
+      document.removeEventListener('click', handleContainerCollectClick, true);
+      document.removeEventListener('touchend', handleContainerCollectClick, true);
     };
-  }, []);
+  }, [findCustomer]);
 
   const handleToggleMute = () => {
     if (onToggleMuteProp) {
@@ -263,6 +318,33 @@ export default function MapView({
         map.on('dragstart', () => {
           if (onDisableFollow) onDisableFollow();
           setIsFollowingInternal(false);
+        });
+
+        // Direct Leaflet map event binding for Collect Payment popup button
+        map.on('popupopen', (e: any) => {
+          const popupElement = e.popup?.getElement();
+          if (!popupElement) return;
+
+          const btn = popupElement.querySelector('.leaflet-collect-btn, [data-collect-customer-id]');
+          if (btn) {
+            L.DomEvent.disableClickPropagation(btn);
+            L.DomEvent.disableScrollPropagation(btn);
+
+            const handleBtnAction = (ev: Event) => {
+              L.DomEvent.stopPropagation(ev);
+              L.DomEvent.preventDefault(ev);
+              const custId = btn.getAttribute('data-collect-customer-id') || btn.getAttribute('data-meter-number');
+              const cust = findCustomer(custId);
+              if (cust && onCollectPaymentRef.current) {
+                onCollectPaymentRef.current(cust);
+              }
+            };
+
+            L.DomEvent.off(btn, 'click', handleBtnAction);
+            L.DomEvent.on(btn, 'click', handleBtnAction);
+            L.DomEvent.off(btn, 'touchend', handleBtnAction);
+            L.DomEvent.on(btn, 'touchend', handleBtnAction);
+          }
         });
 
         // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
@@ -594,20 +676,22 @@ export default function MapView({
       const isSelected = selectedCustomer?.customer_id === customer.customer_id;
       const multiStop = multiRoute?.stops?.find((s) => s.customer_id === customer.customer_id);
       const isCurrentStop = multiStop && (multiStop.sequence - 1) === activeStopIndex;
+      const isDot = markerStyle === 'dot';
 
       const markerHtml = buildConsumerMarkerHtml(
         customer.status,
         customer.priority,
         isSelected || !!isCurrentStop,
         multiStop?.sequence,
-        customer.meter_number
+        customer.meter_number,
+        markerStyle
       );
 
       const icon = L.divIcon({
         html: markerHtml,
         className: 'customer-marker-div',
-        iconSize: [74, customer.meter_number ? 56 : 40],
-        iconAnchor: [37, 38],
+        iconSize: isDot ? [32, 32] : [74, customer.meter_number ? 56 : 40],
+        iconAnchor: isDot ? [16, 16] : [37, 38],
       });
 
       const pos: [number, number] = [customer.latitude, customer.longitude];
@@ -616,6 +700,8 @@ export default function MapView({
       const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
       const daysText = rawPendingDays !== undefined && rawPendingDays !== null ? `${rawPendingDays} Days` : '-';
       const isHighPending = Number(rawPendingDays) > 30;
+
+      const safeId = String(customer.customer_id || customer.id || customer.meter_number || '').replace(/['"\\`]/g, '');
 
       const popupHtml = `
         <div style="min-width: 210px; max-width: 250px; padding: 12px; font-family: system-ui, sans-serif;">
@@ -638,10 +724,12 @@ export default function MapView({
           </div>
 
           <button
-            id="leaflet-collect-btn-${customer.customer_id}"
-            data-collect-customer-id="${customer.customer_id}"
+            id="leaflet-collect-btn-${safeId}"
+            class="leaflet-collect-btn"
+            data-collect-customer-id="${customer.customer_id || customer.id || customer.meter_number}"
+            data-meter-number="${customer.meter_number || ''}"
             type="button"
-            onclick="event.stopPropagation(); if (window.__mvCollectPayment) { window.__mvCollectPayment('${customer.customer_id}'); }"
+            onclick="if (event) { event.preventDefault(); event.stopPropagation(); } if (window.__mvCollectPayment) { window.__mvCollectPayment('${safeId}'); }"
             style="width: 100%; padding: 8px 10px; background: #059669; color: #ffffff; border: none; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: background 0.2s; -webkit-tap-highlight-color: transparent;"
             onmouseover="this.style.background='#047857'"
             onmouseout="this.style.background='#059669'"
@@ -659,11 +747,12 @@ export default function MapView({
 
         // Immediately re-bind direct click handler if popup is already open
         setTimeout(() => {
-          const btn = document.getElementById(`leaflet-collect-btn-${customer.customer_id}`);
+          const btn = document.getElementById(`leaflet-collect-btn-${safeId}`);
           if (btn) {
             btn.onclick = (e) => {
+              e.preventDefault();
               e.stopPropagation();
-              if (onCollectPayment) onCollectPayment(customer);
+              if (onCollectPaymentRef.current) onCollectPaymentRef.current(customer);
             };
           }
         }, 0);
@@ -671,7 +760,7 @@ export default function MapView({
         marker = L.marker(pos, { icon, zIndexOffset: isSelected || isCurrentStop ? 1000 : 100 }).addTo(map);
 
         const popup = L.popup({
-          offset: [0, -32],
+          offset: isDot ? [0, -14] : [0, -32],
           closeButton: true,
           className: 'leaflet-custom-popup',
         }).setContent(popupHtml);
@@ -685,11 +774,12 @@ export default function MapView({
 
         marker.on('popupopen', () => {
           setTimeout(() => {
-            const btn = document.getElementById(`leaflet-collect-btn-${customer.customer_id}`);
+            const btn = document.getElementById(`leaflet-collect-btn-${safeId}`);
             if (btn) {
               btn.onclick = (e) => {
+                e.preventDefault();
                 e.stopPropagation();
-                if (onCollectPayment) onCollectPayment(customer);
+                if (onCollectPaymentRef.current) onCollectPaymentRef.current(customer);
               };
             }
           }, 0);
@@ -702,7 +792,7 @@ export default function MapView({
         marker.openPopup();
       }
     });
-  }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment]);
+  }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment, markerStyle]);
 
   // ── 8. Draw OSRM Polyline Routes on Leaflet (Flicker-Free & Glitch-Free) ─────
   useEffect(() => {
@@ -783,6 +873,8 @@ export default function MapView({
       <div className="absolute right-4 bottom-6 z-20 flex flex-col items-end gap-2">
         <MapControls
           currentLayer={currentLayer}
+          markerStyle={markerStyle}
+          onToggleMarkerStyle={() => setMarkerStyle((prev) => (prev === 'dot' ? 'pin' : 'dot'))}
           isFollowing={isFollowing}
           officerHeading={currentBearing}
           isMuted={isMuted}
