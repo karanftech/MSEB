@@ -1,120 +1,178 @@
 import io
 import csv
+import math
+import hashlib
+import logging
 from typing import List, Dict, Any, Tuple, Optional
-
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
-from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete, or_, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from fastapi import UploadFile, HTTPException
+
+from app.models.customer import Customer
+from app.models.meter import Meter
+from app.database import point_wkt
+
+logger = logging.getLogger("uvicorn.error")
 
 class CustomerImportService:
 
     @staticmethod
     def normalize_header(header: str) -> str:
         """Clean and normalize column names for fuzzy header matching."""
-        return header.strip().lower().replace('_', ' ').replace('-', ' ')
+        if not header:
+            return ""
+        return (
+            header.strip()
+            .lower()
+            .replace('\t', ' ')
+            .replace('\r', '')
+            .replace('\n', '')
+            .replace('_', ' ')
+            .replace('-', ' ')
+            .replace('.', ' ')
+        ).strip()
 
     @staticmethod
     def get_column_mapping(headers: List[str]) -> Dict[str, int]:
-        """
-        Maps normalized header titles to row column indices.
-        Supports aliases like:
-        - customer_id: 'cus id', 'customer id', 'customer_id', 'cus_id'
-        - consumer_no/name: 'cons no', 'consumer no', 'consumer_no', 'name', 'phone'
-        - meter_id: 'meter id', 'meter_id', 'meter number', 'meter_number', 'meter no'
-        - latitude: 'latitude', 'lat', 'lang long' (part 1)
-        - longitude: 'longitude', 'long', 'lng', 'lang long' (part 2)
-        - pending_amount: 'total deu amt', 'total due amt', 'pending_amount', 'due amount', 'bill_amount'
-        """
-        mapping = {}
-        for idx, raw_h in enumerate(headers):
-            h = CustomerImportService.normalize_header(raw_h)
-            if not h:
-                continue
+        mapping: Dict[str, int] = {}
+        normalized = [CustomerImportService.normalize_header(h) for h in headers]
 
-            if any(k in h for k in ['consumer name', 'customer name', 'cust name', 'cons name']) or h == 'name':
-                mapping['name'] = idx
-            elif any(k in h for k in ['consumer no', 'consumer num', 'consumer number', 'consumer_no', 'customer id', 'customer_id', 'cus id', 'cus_id', 'cust id', 'account no', 'ca no']):
+        # Priority 1: Customer ID
+        for idx, h in enumerate(normalized):
+            if h in ['consumer no', 'consumer num', 'consumer number', 'consumer_no', 'customer id', 'customer_id', 'consumer id', 'ca no', 'account no', 'sc no', 'k no']:
                 mapping['customer_id'] = idx
-            elif any(k in h for k in ['meter id', 'meter_id', 'meter number', 'meter_number', 'meter no', 'mtr id']):
-                mapping['meter_number'] = idx
-            elif any(k in h for k in ['pending amount', 'total deu amt', 'total_due_amt', 'total due amt', 'pending_amount', 'due amount', 'bill amount', 'amount']):
-                mapping['pending_amount'] = idx
-            elif any(k in h for k in ['latitude', 'lat']):
-                mapping['latitude'] = idx
-            elif any(k in h for k in ['longitude', 'long', 'lng']):
-                mapping['longitude'] = idx
-            elif any(k in h for k in ['lang long', 'lat long', 'coordinates', 'lat/long']):
-                mapping['lang_long'] = idx
-            elif any(k in h for k in ['dtc code', 'dtc_code', 'dtc no', 'dtc_no', 'dtc number', 'dtc id', 'dtc']):
-                mapping['dtc_code'] = idx
-            elif any(k in h for k in ['disconnection_status', 'meter_status', 'disconnection', 'status_code', 'category', 'action', 'status']):
-                mapping['disconnection_status'] = idx
-            elif any(k in h for k in [
-                'days pending', 'day pending',
-                'pending days', 'pending_days', 'pending day', 'pending_day',
-                'overdue days', 'overdue_days', 'overdue day', 'overdue_day',
-                'due days', 'due_days', 'due day', 'due_day',
-                'aging', 'ageing',
-                'no of days', 'no of day', 'number of days', 'no. of days',
-                'os days', 'o/s days', 'os day', 'o/s day',
-                'outstanding days', 'outstanding day',
-                'arrears days', 'bill days', 'delay days', 'delayed days',
-                'pen days', 'pend days', 'pen day', 'pend day'
-            ]) or h in ['days', 'day', 'pending', 'overdue', 'age']:
-                mapping['pending_days'] = idx
-            elif any(k in h for k in ['due date', 'due_date', 'duedate', 'bill date', 'bill_date']):
-                mapping['due_date'] = idx
-            elif 'address' in h:
-                mapping['address'] = idx
-            elif 'area' in h:
-                mapping['area'] = idx
-            elif any(k in h for k in ['cons no', 'cons_no']):
-                if 'customer_id' in mapping and 'name' not in mapping:
-                    mapping['name'] = idx
-                else:
+                break
+        if 'customer_id' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['consumer no', 'consumer id', 'customer id', 'account no', 'ca no']):
                     mapping['customer_id'] = idx
+                    break
+
+        # Priority 2: Customer Name
+        for idx, h in enumerate(normalized):
+            if h in ['consumer name', 'customer name', 'cust name', 'client name', 'name', 'consumer']:
+                mapping['name'] = idx
+                break
+        if 'name' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['consumer name', 'customer name', 'client name']) and 'incharge' not in h:
+                    mapping['name'] = idx
+                    break
+
+        # Priority 3: Meter Number / ID
+        for idx, h in enumerate(normalized):
+            if h in ['meter number', 'meter id', 'meter no', 'meter_number', 'meter_id', 'mtr no', 'mtr id']:
+                mapping['meter_number'] = idx
+                break
+        if 'meter_number' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['meter number', 'meter id', 'meter no']) and 'type' not in h and 'status' not in h and 'reading' not in h:
+                    mapping['meter_number'] = idx
+                    break
+
+        # Priority 4: DTC Code (EXCLUDE incharge, section, name, remark, mobile)
+        for idx, h in enumerate(normalized):
+            if h in ['dtc code', 'dtc_code', 'dtc no', 'dtc_no', 'dtc number', 'dtc id', 'dtc']:
+                mapping['dtc_code'] = idx
+                break
+        if 'dtc_code' not in mapping:
+            for idx, h in enumerate(normalized):
+                if ('dtc' in h or 'dtr' in h or 'transformer' in h) and not any(skip in h for skip in ['incharge', 'section', 'name', 'remark', 'mobile', 'phone', 'officer', 'tech']):
+                    mapping['dtc_code'] = idx
+                    break
+
+        # Priority 5: Pending Amount (EXCLUDE SD, interest, opening, DPC, receipt, adjustment, cr, closing)
+        for idx, h in enumerate(normalized):
+            if h in ['pending amount', 'pending_amount', 'due amount', 'bill amount', 'net amount', 'total due amt']:
+                mapping['pending_amount'] = idx
+                break
+        if 'pending_amount' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['pending amount', 'due amount', 'bill amount', 'arrears amount', 'total due']) and not any(skip in h for skip in ['sd', 'interest', 'opening', 'dpc', 'receipt', 'adjustment', 'cr', 'closing']):
+                    mapping['pending_amount'] = idx
+                    break
+        if 'pending_amount' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['amount', 'amt', 'arrears']) and not any(skip in h for skip in ['sd', 'interest', 'opening', 'dpc', 'receipt', 'adjustment', 'cr', 'closing']):
+                    mapping['pending_amount'] = idx
+                    break
+
+        # Priority 6: Latitude & Longitude
+        for idx, h in enumerate(normalized):
+            if h in ['latitude', 'lat']:
+                mapping['latitude'] = idx
+            elif h in ['longitude', 'long', 'lng', 'longitute']:
+                mapping['longitude'] = idx
+            elif h in ['lang long', 'lat long', 'coordinates', 'gps', 'lat/long']:
+                mapping['lang_long'] = idx
+
+        # Priority 7: Pending Days
+        for idx, h in enumerate(normalized):
+            if h in ['days pending', 'pending days', 'age in days', 'overdue days', 'due days']:
+                mapping['pending_days'] = idx
+                break
+        if 'pending_days' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['days pending', 'pending days', 'age in days', 'overdue days', 'aging', 'ageing', 'no of days', 'os days']):
+                    mapping['pending_days'] = idx
+                    break
+
+        # Priority 8: Address & Area
+        for idx, h in enumerate(normalized):
+            if 'address' in h:
+                mapping['address'] = idx
+            elif h in ['area', 'village', 'subdivision', 'division', 'ward', 'zone', 'city', 'section']:
+                mapping['area'] = idx
+
+        # Priority 9: Due Date
+        for idx, h in enumerate(normalized):
+            if any(k in h for k in ['due date', 'due_date', 'bill due date', 'prompt date']):
+                mapping['due_date'] = idx
+                break
+
+        # Priority 10: Disconnection Status
+        for idx, h in enumerate(normalized):
+            if any(k in h for k in ['disconnection_status', 'meter_status', 'disconnection', 'status_code', 'category', 'action']):
+                mapping['disconnection_status'] = idx
+                break
+
+        # Fallback if customer_id not found
+        if 'customer_id' not in mapping and len(headers) > 0:
+            mapping['customer_id'] = 0
 
         return mapping
 
     @staticmethod
     def normalize_dtc_code(val: Any) -> str:
-        """
-        Clean and normalize DTC code into a standard 7-digit string.
-        Rule: DTC code has 7 digits always (e.g., '0123456' or '4410012').
-        """
         if val is None:
-            return ""
-        
+            return "0101001"
         s = str(val).strip()
-        if not s or s.lower() in ('nan', 'none', 'null', '0', '0.0'):
-            return ""
-
+        if not s or s.lower() in ('nan', 'none', 'null', '0', '0.0', '-'):
+            return "0101001"
+        # If string contains separator like "4364002 - DEVI MANDIR", extract leading code
+        if ' - ' in s:
+            s = s.split(' - ')[0].strip()
+        elif '-' in s and not s.startswith('-'):
+            parts = s.split('-')
+            if parts[0].strip():
+                s = parts[0].strip()
         if s.endswith('.0'):
             s = s[:-2]
-
         s = s.upper().replace(" ", "")
-
-        if s.isdigit():
-            if len(s) < 7:
-                s = s.zfill(7)
-            elif len(s) > 7:
-                s = s[:7]
-        elif len(s) < 7:
-            import re
-            digits = re.sub(r'\D', '', s)
-            letters = re.sub(r'\d', '', s)
-            if digits:
-                padded_digits = digits.zfill(max(1, 7 - len(letters)))
-                s = f"{letters}{padded_digits}"
-            else:
-                s = s.zfill(7)
-
-        return s
+        import re
+        clean_s = re.sub(r'[^A-Z0-9]', '', s)
+        if clean_s:
+            s = clean_s
+        if len(s) > 50:
+            s = s[:50]
+        return s or "0101001"
 
     @staticmethod
     async def parse_file_rows(file: UploadFile) -> Tuple[List[str], List[List[Any]]]:
-        """Extract headers and data rows from CSV or XLSX files."""
         content = await file.read()
         filename = (file.filename or '').lower()
 
@@ -160,7 +218,7 @@ class CustomerImportService:
             
             headers = [str(cell) if cell is not None else "" for cell in rows[0]]
             data_rows = [
-                [str(cell) if cell is not None else "" for cell in row]
+                [cell if cell is not None else "" for cell in row]
                 for row in rows[1:]
                 if any(cell is not None and str(cell).strip() != "" for cell in row)
             ]
@@ -172,113 +230,103 @@ class CustomerImportService:
     @staticmethod
     async def import_customers(
         file: UploadFile, 
-        db: AsyncIOMotorDatabase, 
+        db: AsyncSession, 
         uploader_officer_id: Optional[str] = None,
-        user_id_str: Optional[str] = None
+        user_id_str: Optional[str] = None,
+        replace_all: bool = True
     ) -> Dict[str, Any]:
-        """Process rows, clear previous records for this field officer to optimize storage, and insert new records into MongoDB."""
+        """Process rows and bulk upsert records into PostgreSQL using PostGIS."""
         headers, data_rows = await CustomerImportService.parse_file_rows(file)
         mapping = CustomerImportService.get_column_mapping(headers)
 
-        if 'dtc_code' not in mapping:
-            raise HTTPException(
-                status_code=400,
-                detail="DTC Code column is missing in the uploaded file. DTC Code is required in CSV."
-            )
-
-        if 'customer_id' not in mapping and len(headers) >= 1:
-            mapping['customer_id'] = 0
-
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-        today = datetime.utcnow()
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        today = datetime.now(timezone.utc)
         default_due_date = (today + timedelta(days=15)).strftime("%Y-%m-%d")
 
-        # Overwrite: Delete previous customer & meter records for this field officer
-        deleted_count = 0
-        officer_match = []
-        if uploader_officer_id:
-            officer_match.extend([
-                {"assigned_officer_id": uploader_officer_id},
-                {"uploaded_by_officer_id": uploader_officer_id}
-            ])
-        if user_id_str:
-            officer_match.extend([
-                {"assigned_officer_id": user_id_str},
-                {"uploaded_by_officer_id": user_id_str}
-            ])
-
-        if officer_match:
-            del_cus_res = await db.customers.delete_many({"$or": officer_match})
-            del_mtr_res = await db.meters.delete_many({"$or": officer_match})
-            deleted_count = del_cus_res.deleted_count
-
-        inserted_count = 0
-        updated_count = 0
+        customers_to_upsert: Dict[str, Dict[str, Any]] = {}
+        meters_to_upsert: List[Dict[str, Any]] = []
         errors = []
+
+        base_lat = 21.1458
+        base_lng = 79.0882
 
         for row_idx, row in enumerate(data_rows, start=2):
             try:
                 def get_val(key: str, default: str = "") -> str:
                     if key in mapping and mapping[key] < len(row):
-                        return str(row[mapping[key]]).strip()
+                        val = row[mapping[key]]
+                        return str(val).strip() if val is not None else default
                     return default
 
                 customer_id = get_val('customer_id')
-                if not customer_id:
+                if not customer_id or customer_id.lower() in ('none', 'nan', 'null', ''):
                     customer_id = f"CUS{10000 + row_idx}"
+                # Remove trailing .0 from customer_id if formatted as float
+                if customer_id.endswith('.0') and customer_id[:-2].isdigit():
+                    customer_id = customer_id[:-2]
 
                 name = get_val('name') or f"Consumer {customer_id}"
                 meter_number = get_val('meter_number') or f"MTR-{customer_id}"
+                if meter_number.endswith('.0') and meter_number[:-2].isdigit():
+                    meter_number = meter_number[:-2]
 
-                # Parse coordinates (latitude, longitude)
-                lat = 21.1458
-                lng = 79.0882
+                # Coordinates with fallback
+                lat = None
+                lng = None
 
                 if 'latitude' in mapping and 'longitude' in mapping:
                     try:
-                        lat = float(get_val('latitude', '21.1458'))
-                        lng = float(get_val('longitude', '79.0882'))
-                    except ValueError:
+                        raw_lat_str = get_val('latitude', '')
+                        raw_lng_str = get_val('longitude', '')
+                        if raw_lat_str and raw_lng_str:
+                            raw_lat = float(raw_lat_str)
+                            raw_lng = float(raw_lng_str)
+                            if -90 <= raw_lat <= 90 and -180 <= raw_lng <= 180 and (raw_lat != 0.0 or raw_lng != 0.0):
+                                lat = raw_lat
+                                lng = raw_lng
+                    except (ValueError, TypeError):
                         pass
                 elif 'lang_long' in mapping:
                     lang_long_str = get_val('lang_long')
-                    if ',' in lang_long_str:
-                        parts = lang_long_str.split(',')
+                    delimiter = ',' if ',' in lang_long_str else (' ' if ' ' in lang_long_str else None)
+                    if delimiter:
+                        parts = lang_long_str.split(delimiter)
                         try:
-                            lat = float(parts[0].strip())
-                            lng = float(parts[1].strip())
-                        except ValueError:
-                            pass
-                    elif ' ' in lang_long_str:
-                        parts = lang_long_str.split()
-                        try:
-                            lat = float(parts[0].strip())
-                            lng = float(parts[1].strip())
-                        except ValueError:
+                            raw_lat = float(parts[0].strip())
+                            raw_lng = float(parts[1].strip())
+                            if -90 <= raw_lat <= 90 and -180 <= raw_lng <= 180 and (raw_lat != 0.0 or raw_lng != 0.0):
+                                lat = raw_lat
+                                lng = raw_lng
+                        except (ValueError, TypeError):
                             pass
 
-                # Parse pending amount
+                # Deterministic Nagpur GIS coordinates fallback if none or 0
+                if lat is None or lng is None or (lat == 0.0 and lng == 0.0):
+                    h = int(hashlib.md5(str(customer_id).encode()).hexdigest()[:8], 16)
+                    angle = (h % 360) * (math.pi / 180.0)
+                    dist = 0.008 + ((h >> 8) % 40) * 0.001
+                    lat = round(base_lat + dist * math.cos(angle), 6)
+                    lng = round(base_lng + dist * math.sin(angle), 6)
+
+                # Pending Amount
                 pending_amount = 0.0
                 raw_amt = get_val('pending_amount', '0')
                 clean_amt = raw_amt.replace('$', '').replace('₹', '').replace(',', '').strip()
                 try:
-                    pending_amount = float(clean_amt)
-                except ValueError:
+                    pending_amount = round(float(clean_amt), 2)
+                except (ValueError, TypeError):
                     pending_amount = 0.0
 
-                address = get_val('address') or f"Plot {row_idx}, Central Sector"
-                area = get_val('area') or "Central Area"
+                area = get_val('area') or "Central Ward"
+                address = get_val('address') or f"Plot {row_idx}, {area}"
 
+                # DTC Code (clean & bounded)
                 raw_dtc = get_val('dtc_code', '')
                 dtc_code = CustomerImportService.normalize_dtc_code(raw_dtc)
-                if not dtc_code:
-                    errors.append(f"Row {row_idx}: DTC code is required in CSV.")
-                    continue
 
                 status = "overdue" if pending_amount > 3000 else ("pending" if pending_amount > 0 else "paid")
                 priority = "high" if pending_amount > 5000 else "normal"
 
-                # Parse disconnection status (TD, PD, BUR, DIS) if present
                 raw_disconn = get_val('disconnection_status', '').upper()
                 disconn_status = None
                 for cat in ['TD', 'PD', 'BUR', 'DIS']:
@@ -286,52 +334,33 @@ class CustomerImportService:
                         disconn_status = cat
                         break
 
-                location = {
-                    "type": "Point",
-                    "coordinates": [lng, lat]
-                }
-
                 officer_id_to_assign = uploader_officer_id or ("OFF-1001" if (row_idx % 2 == 0) else "OFF-1002")
 
-                # Parse pending_days
                 pending_days = None
                 raw_pending_days = get_val('pending_days', '')
                 if raw_pending_days:
                     try:
-                        pending_days = int(float(str(raw_pending_days).strip()))
+                        pending_days = str(int(float(str(raw_pending_days).strip())))
                     except (ValueError, TypeError):
-                        try:
-                            pending_days = str(raw_pending_days).strip()
-                        except Exception:
-                            pending_days = None
-
-                # Fallback: scan row if pending_days was not found by mapping
-                if pending_days is None:
-                    for col_idx, cell_val in enumerate(row):
-                        if col_idx < len(headers):
-                            h_norm = CustomerImportService.normalize_header(headers[col_idx])
-                            if any(w in h_norm for w in ['day', 'pend', 'overdue', 'aging', 'ageing', 'delay']) and 'amount' not in h_norm and 'amt' not in h_norm and 'date' not in h_norm:
-                                try:
-                                    s_val = str(cell_val).strip()
-                                    if s_val and s_val.lower() not in ('none', 'nan', 'null', ''):
-                                        pending_days = int(float(s_val))
-                                        break
-                                except (ValueError, TypeError):
-                                    pass
+                        pending_days = str(raw_pending_days).strip() or None
 
                 raw_due_date = get_val('due_date', '')
                 due_date = raw_due_date if raw_due_date else default_due_date
 
-                customer_doc = {
+                # PostGIS Geometry
+                pt_geom = point_wkt(lng, lat)
+
+                customers_to_upsert[customer_id] = {
+                    "id": str(uuid4()),
                     "customer_id": customer_id,
                     "name": name,
-                    "phone": f"+91 98{row_idx:02d}001122",
+                    "phone": f"+91 98{row_idx % 90 + 10:02d}001122",
                     "email": f"customer_{customer_id.lower()}@example.com",
                     "address": address,
                     "area": area,
                     "latitude": lat,
                     "longitude": lng,
-                    "location": location,
+                    "location": pt_geom,
                     "meter_number": meter_number,
                     "dtc_code": dtc_code,
                     "pending_amount": pending_amount,
@@ -342,45 +371,100 @@ class CustomerImportService:
                     "priority": priority,
                     "assigned_officer_id": officer_id_to_assign,
                     "uploaded_by_officer_id": uploader_officer_id or officer_id_to_assign,
+                    "created_at": now_str,
                     "updated_at": now_str
                 }
 
-                existing = await db.customers.find_one({"customer_id": customer_id})
-                if existing:
-                    await db.customers.update_one({"customer_id": customer_id}, {"$set": customer_doc})
-                    updated_count += 1
-                else:
-                    customer_doc["created_at"] = now_str
-                    await db.customers.insert_one(customer_doc)
-                    inserted_count += 1
-
-                # Upsert associated Meter document
-                meter_id = f"MTR-{meter_number}"
-                meter_doc = {
-                    "meter_id": meter_id,
+                meters_to_upsert.append({
+                    "id": str(uuid4()),
+                    "meter_id": f"MTR-{meter_number}",
                     "meter_number": meter_number,
                     "customer_id": customer_id,
                     "latitude": lat,
                     "longitude": lng,
+                    "location": pt_geom,
                     "dtc_code": dtc_code,
-                    "assigned_officer_id": customer_doc.get("assigned_officer_id"),
-                    "uploaded_by_officer_id": customer_doc.get("uploaded_by_officer_id")
-                }
+                    "assigned_officer_id": officer_id_to_assign,
+                    "uploaded_by_officer_id": uploader_officer_id or officer_id_to_assign,
+                    "created_at": now_str,
+                    "updated_at": now_str
+                })
 
+            except Exception as row_exc:
+                errors.append(f"Row {row_idx}: {str(row_exc)}")
 
-                await db.meters.update_one(
-                    {"customer_id": customer_id, "meter_number": meter_number},
-                    {"$set": meter_doc},
-                    upsert=True
-                )
-
-            except Exception as e:
-                errors.append(f"Row {row_idx}: {str(e)}")
-
-        if inserted_count == 0 and updated_count == 0 and errors:
+        if not customers_to_upsert:
             raise HTTPException(
                 status_code=400,
-                detail="Import failed: DTC code is required in CSV file."
+                detail=f"Import failed: {errors[0] if errors else 'No valid rows found in file.'}"
+            )
+
+        # High-throughput Batch Upsert into PostgreSQL (chunks of 100)
+        inserted_count = 0
+        updated_count = 0
+        deleted_count = 0
+        CHUNK_SIZE = 100
+
+        try:
+            cus_list = list(customers_to_upsert.values())
+
+            if replace_all:
+                # Count existing customers before deleting
+                del_count_stmt = select(func.count(Customer.id))
+                del_res = await db.execute(del_count_stmt)
+                deleted_count = del_res.scalar() or 0
+
+                # Wipe existing meters and customers so only newly uploaded data remains
+                await db.execute(delete(Meter))
+                await db.execute(delete(Customer))
+
+                inserted_count = len(cus_list)
+                updated_count = 0
+            else:
+                # In append mode, calculate existing vs new
+                existing_cust_ids = list(customers_to_upsert.keys())
+                # Chunk existing id checks if large
+                existing_in_db = set()
+                for i in range(0, len(existing_cust_ids), 500):
+                    id_sub = existing_cust_ids[i : i + 500]
+                    chk_res = await db.execute(select(Customer.customer_id).where(Customer.customer_id.in_(id_sub)))
+                    for row in chk_res.scalars().all():
+                        existing_in_db.add(row)
+
+                updated_count = len(existing_in_db)
+                inserted_count = len(cus_list) - updated_count
+                deleted_count = 0
+
+            for i in range(0, len(cus_list), CHUNK_SIZE):
+                chunk = cus_list[i : i + CHUNK_SIZE]
+                stmt = pg_insert(Customer).values(chunk)
+                update_cols = {
+                    c.name: stmt.excluded[c.name]
+                    for c in Customer.__table__.columns
+                    if c.name not in ('id', 'customer_id', 'created_at')
+                }
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['customer_id'],
+                    set_=update_cols
+                )
+                await db.execute(stmt)
+
+            # Sync meters for uploaded customers
+            for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
+                m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
+                cust_ids = [m['customer_id'] for m in m_chunk]
+                if not replace_all:
+                    await db.execute(delete(Meter).where(Meter.customer_id.in_(cust_ids)))
+                await db.execute(pg_insert(Meter).values(m_chunk))
+
+            await db.commit()
+
+        except Exception as db_exc:
+            await db.rollback()
+            logger.error(f"PostgreSQL batch import error: {db_exc}", exc_info=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Database import error: {str(db_exc)}"
             )
 
         return {
@@ -390,5 +474,5 @@ class CustomerImportService:
             "inserted_count": inserted_count,
             "updated_count": updated_count,
             "deleted_count": deleted_count,
-            "errors": errors
+            "errors": errors[:10]
         }

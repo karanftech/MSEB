@@ -8,15 +8,10 @@ import {
   MultiRouteCalculationResult,
   MapLayerType,
   NavigationState,
-  StreetViewState,
 } from '@/types';
-import { createOfficerMarkerIcon } from '@/components/map/OfficerMarker';
 import MapControls from '@/components/map/MapControls';
 import NavigationPanel from '@/components/map/NavigationPanel';
-import StreetViewModal from '@/components/map/StreetViewModal';
-import { X, CheckCircle2 } from 'lucide-react';
 import { speakInstruction, stopSpeech } from '@/utils/speech';
-import { getOverdueDays } from '@/utils/formatters';
 
 interface MapViewProps {
   customers: Customer[];
@@ -27,12 +22,9 @@ interface MapViewProps {
   multiRoute?: MultiRouteCalculationResult | null;
   activeStopIndex?: number;
   navState?: NavigationState;
-  streetView?: StreetViewState;
   onSelectCustomer: (customer: Customer | null) => void;
   onExitNavigation?: () => void;
   onCollectPayment?: (customer?: Customer) => void;
-  onOpenStreetView?: (customer: Customer) => void;
-  onCloseStreetView?: () => void;
   onToggleFollow?: () => void;
   onDisableFollow?: () => void;
   onDirectionsCalculated?: (result: RouteCalculationResult) => void;
@@ -41,16 +33,15 @@ interface MapViewProps {
   onToggleMute?: () => void;
 }
 
-// ─── Marker icon helpers ──────────────────────────────────────────────────────
+// ─── SVG Marker Builders ────────────────────────────────────────────────────────
 
-function buildConsumerMarkerSvg(
+function buildConsumerMarkerHtml(
   status: string,
   priority: string | undefined,
   isSelected: boolean,
   sequence?: number,
   meterNumber?: string
 ): string {
-  // Status colors
   const colorMap: Record<string, string> = {
     overdue: '#ef4444',
     pending: '#f59e0b',
@@ -65,56 +56,69 @@ function buildConsumerMarkerSvg(
     : '';
 
   const pinInner = sequence !== undefined
-    ? `<text x="17" y="23" text-anchor="middle" fill="#FFF" font-size="13" font-weight="900" font-family="sans-serif">${sequence}</text>`
+    ? `<text x="17" y="23" text-anchor="middle" fill="#FFF" font-size="13" font-weight="900" font-family="system-ui, sans-serif">${sequence}</text>`
     : `<circle cx="17" cy="17" r="9" fill="#0F172A"/><path d="M16 9L11 18H16L15 25L21 15H16L17 9Z" fill="${baseColor}"/>`;
 
   const badgeSvg = meterText
     ? `<rect x="2" y="39" width="70" height="16" rx="4" fill="#0F172A" stroke="#FFF" stroke-width="1.5"/>
-       <text x="37" y="50.5" text-anchor="middle" fill="#FFF" font-size="8.5" font-weight="800" font-family="sans-serif" letter-spacing="0.2">${meterText}</text>`
+       <text x="37" y="50.5" text-anchor="middle" fill="#FFF" font-size="8.5" font-weight="800" font-family="system-ui, sans-serif" letter-spacing="0.2">${meterText}</text>`
     : '';
 
   const totalH = meterText ? 56 : 40;
-  return `<svg width="74" height="${totalH}" viewBox="0 0 74 ${totalH}" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <g transform="translate(20,0)">
-      <path d="M17 0C7.611 0 0 7.611 0 17C0 29.75 17 38 17 38C17 38 34 29.75 34 17C34 7.611 26.389 0 17 0Z" fill="${baseColor}" stroke="#FFF" stroke-width="2"/>
-      ${pinInner}
-    </g>
-    ${badgeSvg}
-  </svg>`;
+  return `
+    <div style="position: relative; width: 74px; height: ${totalH}px; cursor: pointer; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+      <svg width="74" height="${totalH}" viewBox="0 0 74 ${totalH}" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <g transform="translate(20,0)">
+          <path d="M17 0C7.611 0 0 7.611 0 17C0 29.75 17 38 17 38C17 38 34 29.75 34 17C34 7.611 26.389 0 17 0Z" fill="${baseColor}" stroke="#FFF" stroke-width="2"/>
+          ${pinInner}
+        </g>
+        ${badgeSvg}
+      </svg>
+    </div>
+  `;
 }
 
-async function fetchOSRMPath(
-  originLat: number,
-  originLng: number,
-  destLat: number,
-  destLng: number
-): Promise<{ coordinates: Coordinates[]; distanceMeters: number; durationSeconds: number } | null> {
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${originLng},${originLat};${destLng},${destLat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-        const route0 = data.routes[0];
-        const geoCoords = route0.geometry?.coordinates || [];
-        const coordinates: Coordinates[] = geoCoords.map((pt: [number, number]) => ({
-          latitude: pt[1],
-          longitude: pt[0],
-        }));
-        return {
-          coordinates,
-          distanceMeters: route0.distance || 0,
-          durationSeconds: route0.duration || 0,
-        };
-      }
-    }
-  } catch (e) {
-    console.warn('OSRM path fetch error:', e);
-  }
-  return null;
+function buildOfficerMarkerHtml(heading: number | null | undefined): string {
+  const rotDeg = heading !== null && heading !== undefined ? heading : 0;
+  return `
+    <div style="position: relative; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;">
+      <!-- Pulsing Beacon Wave -->
+      <div style="position: absolute; width: 44px; height: 44px; border-radius: 50%; background: rgba(14, 165, 233, 0.25); animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+      
+      <!-- Directional Arrow / Compass Cone -->
+      <div style="position: absolute; width: 48px; height: 48px; transform: rotate(${rotDeg}deg); transition: transform 0.2s ease-out;">
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="24,2 29,14 19,14" fill="#0284c7" stroke="#ffffff" stroke-width="1.5" />
+        </svg>
+      </div>
+
+      <!-- Center Officer Badge -->
+      <div style="position: relative; width: 26px; height: 26px; border-radius: 50%; background: #0284c7; border: 3px solid #ffffff; box-shadow: 0 2px 8px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: #ffffff;"></div>
+      </div>
+    </div>
+  `;
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// Tile Layer URLs
+const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
+  roadmap: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' },
+  },
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    options: { maxZoom: 19, attribution: 'Tiles &copy; Esri' },
+  },
+  hybrid: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    options: { maxZoom: 19, attribution: 'Tiles &copy; Esri' },
+  },
+  terrain: {
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 17, attribution: '&copy; OpenTopoMap' },
+  },
+};
 
 export default function MapView({
   customers,
@@ -125,12 +129,9 @@ export default function MapView({
   multiRoute,
   activeStopIndex = 0,
   navState,
-  streetView,
   onSelectCustomer,
   onExitNavigation,
   onCollectPayment,
-  onOpenStreetView,
-  onCloseStreetView,
   onToggleFollow,
   onDisableFollow,
   onDirectionsCalculated,
@@ -140,38 +141,23 @@ export default function MapView({
 }: MapViewProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
 
-  // Google Maps refs
-  const googleMapRef = useRef<any>(null);
-  const directionsServiceRef = useRef<any>(null);
-  const directionsRendererRef = useRef<any>(null);  // Real road route renderer
-  const infoWindowRef = useRef<any>(null);
+  // Leaflet Map & Layer Instances
+  const leafletMapRef = useRef<any>(null);
+  const tileLayerRef = useRef<any>(null);
   const officerMarkerRef = useRef<any>(null);
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
-  const fallbackPolylineRef = useRef<any>(null);
+  const routePolylineCasingRef = useRef<any>(null);
+  const routePolylineRef = useRef<any>(null);
+  const LRef = useRef<any>(null);
 
-  // Leaflet fallback refs
-  const leafletMapRef = useRef<any>(null);
-  const leafletTileLayerRef = useRef<any>(null);
-  const leafletMarkersRef = useRef<Map<string, any>>(new Map());
-  const leafletOfficerMarkerRef = useRef<any>(null);
-  const leafletRoutePoly = useRef<any>(null);
-
-  // Last direction request fingerprint (avoids duplicate API calls)
-  const lastDirectionsKeyRef = useRef<string>('');
-  const lastFittedMultiRouteRef = useRef<string>('');
-  const userHasInteractedRef = useRef<boolean>(false);
-  const isProgrammaticZoomRef = useRef<boolean>(false);
-
-  // State
-  const [mapEngine, setMapEngine] = useState<'google' | 'leaflet' | 'canvas'>('google');
-  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapReady, setMapReady] = useState<boolean>(false);
   const [currentLayer, setCurrentLayer] = useState<MapLayerType>('roadmap');
   const [isFollowingInternal, setIsFollowingInternal] = useState<boolean>(false);
-  const [is3D, setIs3D] = useState<boolean>(false);
-  const [mapHeading, setMapHeading] = useState<number>(officerHeading || 0);
+  const [currentBearing, setCurrentBearing] = useState<number>(officerHeading || 0);
   const [isMutedInternal, setIsMutedInternal] = useState<boolean>(false);
 
   const isMuted = isMutedProp !== undefined ? isMutedProp : isMutedInternal;
+  const isFollowing = navState?.isFollowing ?? isFollowingInternal;
 
   const handleToggleMute = () => {
     if (onToggleMuteProp) {
@@ -184,512 +170,277 @@ export default function MapView({
     }
   };
 
-  const isFollowing = navState?.isFollowing ?? isFollowingInternal;
-  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  // ── 1. Initialize Leaflet 1.9.4 + Leaflet-Rotate 0.2.8 with 2-Finger Touch Rotation ─
+  useEffect(() => {
+    if (typeof window === 'undefined' || !mapContainerRef.current) return;
+    let isMounted = true;
+    let cleanUpTouchListeners: (() => void) | null = null;
 
-  // Stable refs for callbacks
-  const officerCoordsRef = useRef(officerCoords);
-  officerCoordsRef.current = officerCoords;
-  const onSelectCustomerRef = useRef(onSelectCustomer);
-  onSelectCustomerRef.current = onSelectCustomer;
-  const onCollectPaymentRef = useRef(onCollectPayment);
-  onCollectPaymentRef.current = onCollectPayment;
-  const onToggleFollowRef = useRef(onToggleFollow);
-  onToggleFollowRef.current = onToggleFollow;
-  const onDisableFollowRef = useRef(onDisableFollow);
-  onDisableFollowRef.current = onDisableFollow;
-  const onDirectionsCalculatedRef = useRef(onDirectionsCalculated);
-  onDirectionsCalculatedRef.current = onDirectionsCalculated;
+    async function initLeaflet() {
+      try {
+        const leafletModule = await import('leaflet');
+        const L = (leafletModule as any).default || leafletModule;
+        LRef.current = L;
 
-  const lastOpenWindowFingerprintRef = useRef<string | null>(null);
+        // Ensure L is globally bound for leaflet-rotate plugin
+        if (typeof window !== 'undefined') {
+          (window as any).L = L;
+        }
 
-  // Compact InfoWindow callout over marker with Name, Meter No, Amt & Collect button
-  const showInfoWindowForCustomer = useCallback((customer: Customer, marker: any) => {
-    if (!infoWindowRef.current || !googleMapRef.current || !marker) return;
+        // Load leaflet-rotate plugin
+        try {
+          await import('leaflet-rotate');
+        } catch (rotErr) {
+          console.warn('Leaflet-Rotate plugin note:', rotErr);
+        }
 
-    const fingerprint = `${customer.customer_id}_${customer.pending_amount}_${customer.status}_${customer.pending_days ?? customer.due_date}`;
-    if (lastOpenWindowFingerprintRef.current === fingerprint) {
-      return;
-    }
-    lastOpenWindowFingerprintRef.current = fingerprint;
+        if (!isMounted || !mapContainerRef.current || leafletMapRef.current) return;
 
-    const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
-    let pendingDaysValue: string | number | null = null;
-    let isHighPending = false;
+        const defaultLat = officerCoords?.latitude ?? 21.1458;
+        const defaultLng = officerCoords?.longitude ?? 79.0882;
 
-    if (rawPendingDays !== undefined && rawPendingDays !== null && rawPendingDays !== '') {
-      const num = Number(rawPendingDays);
-      pendingDaysValue = isNaN(num) ? String(rawPendingDays) : num;
-      isHighPending = !isNaN(num) && num > 30;
-    }
+        // Initialize Leaflet map with 360° rotation enabled
+        const map = (L as any).map(mapContainerRef.current, {
+          center: [defaultLat, defaultLng],
+          zoom: 16,
+          rotate: true,
+          bearing: officerHeading || 0,
+          touchRotate: true,
+          touchZoom: true,
+          shiftKeyRotate: true,
+          rotateControl: false,
+          zoomControl: false,
+          attributionControl: false,
+        });
 
-    const contentHtml = `
-      <div style="padding: 2px 4px; color: #0f172a; font-family: system-ui, -apple-system, sans-serif; min-width: 195px; max-width: 230px; box-sizing: border-box;">
-        <div style="padding-right: 16px; margin-bottom: 2px;">
-          <h4 style="margin: 0; font-weight: 800; font-size: 12px; color: #0f172a; line-height: 1.2;">${customer.name}</h4>
-          <p style="margin: 2px 0 0; font-size: 10.5px; color: #64748b; font-weight: 600;">Meter: <span style="color: #0284c7; font-weight: 800; font-family: monospace;">${customer.meter_number}</span></p>
-        </div>
+        // Set tile layer
+        const layerConfig = TILE_LAYERS['roadmap'];
+        tileLayerRef.current = L.tileLayer(layerConfig.url, layerConfig.options).addTo(map);
 
-        <div style="margin: 4px 0; padding: 4px 8px; background: ${isHighPending ? '#fef2f2' : '#f0fdf4'}; border: 1px solid ${isHighPending ? '#fecaca' : '#bbf7d0'}; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
-          <span style="font-size: 9.5px; color: ${isHighPending ? '#b91c1c' : '#15803d'}; font-weight: 800; text-transform: uppercase;">Pending Days</span>
-          <span style="font-size: 12.5px; font-weight: 900; color: ${isHighPending ? '#b91c1c' : '#15803d'};">
-            ${pendingDaysValue !== null ? `${pendingDaysValue} Days` : '-'}
-          </span>
-        </div>
+        // Listen for rotate events
+        map.on('rotate', () => {
+          const bearing = typeof (map as any).getBearing === 'function' ? (map as any).getBearing() : 0;
+          setCurrentBearing(bearing);
+        });
 
-        <div style="margin: 4px 0 6px; padding: 4px 8px; background: #fffbebf5; border: 1px solid #fde68a; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
-          <span style="font-size: 9.5px; color: #b45309; font-weight: 800; text-transform: uppercase;">Amt for Pay Now</span>
-          <span style="font-size: 12.5px; font-weight: 900; color: #d97706;">&#8377;${customer.pending_amount.toLocaleString('en-IN')}</span>
-        </div>
+        map.on('dragstart', () => {
+          if (onDisableFollow) onDisableFollow();
+          setIsFollowingInternal(false);
+        });
 
-        <button
-          id="map-info-collect-btn-${customer.customer_id}"
-          style="width: 100%; padding: 6px 10px; background: #059669; color: #ffffff; border: none; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 1px 3px rgba(5,150,105,0.2); transition: all 0.2s;"
-          onmouseover="this.style.background='#047857'"
-          onmouseout="this.style.background='#059669'"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-          <span>Collect &#8377;${customer.pending_amount.toLocaleString('en-IN')}</span>
-        </button>
-      </div>
-    `;
+        // ── Direct 2-Finger Touch Rotation Gesture (Google Maps style) ────────
+        const container = mapContainerRef.current;
+        let isTwoFingerRotating = false;
+        let startAngle = 0;
+        let startBearing = 0;
 
-    infoWindowRef.current.setContent(contentHtml);
-    infoWindowRef.current.open(googleMapRef.current, marker);
+        const calcTouchAngle = (t1: Touch, t2: Touch): number => {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.atan2(dy, dx) * (180 / Math.PI);
+        };
 
-    const google = (window as any).google;
-    if (google?.maps?.event) {
-      google.maps.event.addListenerOnce(infoWindowRef.current, 'domready', () => {
-        const btn = document.getElementById(`map-info-collect-btn-${customer.customer_id}`);
-        if (btn) {
-          btn.onclick = (e) => {
-            e.stopPropagation();
-            if (onCollectPaymentRef.current) {
-              onCollectPaymentRef.current(customer);
+        const handleTouchStart = (e: TouchEvent) => {
+          if (e.touches.length === 2) {
+            isTwoFingerRotating = true;
+            startAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            startBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+          } else {
+            isTwoFingerRotating = false;
+          }
+        };
+
+        const handleTouchMove = (e: TouchEvent) => {
+          if (isTwoFingerRotating && e.touches.length === 2) {
+            const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            const deltaAngle = currentAngle - startAngle;
+            // Subtract deltaAngle so rotating clockwise rotates map view intuitively
+            const newBearing = (startBearing - deltaAngle + 360) % 360;
+            if (typeof map.setBearing === 'function') {
+              map.setBearing(newBearing);
+              setCurrentBearing(newBearing);
             }
+          }
+        };
+
+        const handleTouchEnd = (e: TouchEvent) => {
+          if (e.touches.length < 2) {
+            isTwoFingerRotating = false;
+          }
+        };
+
+        // Desktop Shift+Drag or Alt+Drag rotate
+        let isShiftDragging = false;
+        let shiftStartX = 0;
+        let shiftStartBearing = 0;
+
+        const handleMouseDown = (e: MouseEvent) => {
+          if (e.shiftKey || e.altKey) {
+            isShiftDragging = true;
+            shiftStartX = e.clientX;
+            shiftStartBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            e.preventDefault();
+          }
+        };
+
+        const handleMouseMove = (e: MouseEvent) => {
+          if (isShiftDragging) {
+            const dx = e.clientX - shiftStartX;
+            const newBearing = (shiftStartBearing + dx * 0.5 + 360) % 360;
+            if (typeof map.setBearing === 'function') {
+              map.setBearing(newBearing);
+              setCurrentBearing(newBearing);
+            }
+          }
+        };
+
+        const handleMouseUp = () => {
+          isShiftDragging = false;
+        };
+
+        if (container) {
+          container.addEventListener('touchstart', handleTouchStart, { passive: true });
+          container.addEventListener('touchmove', handleTouchMove, { passive: true });
+          container.addEventListener('touchend', handleTouchEnd, { passive: true });
+          container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+          container.addEventListener('mousedown', handleMouseDown);
+          window.addEventListener('mousemove', handleMouseMove);
+          window.addEventListener('mouseup', handleMouseUp);
+
+          cleanUpTouchListeners = () => {
+            container.removeEventListener('touchstart', handleTouchStart);
+            container.removeEventListener('touchmove', handleTouchMove);
+            container.removeEventListener('touchend', handleTouchEnd);
+            container.removeEventListener('touchcancel', handleTouchEnd);
+            container.removeEventListener('mousedown', handleMouseDown);
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
           };
         }
-      });
+
+        leafletMapRef.current = map;
+        setMapReady(true);
+      } catch (err) {
+        console.error('Failed to initialize Leaflet Map:', err);
+      }
     }
+
+    initLeaflet();
+
+    return () => {
+      isMounted = false;
+      if (cleanUpTouchListeners) cleanUpTouchListeners();
+      if (leafletMapRef.current) {
+        leafletMapRef.current.remove();
+        leafletMapRef.current = null;
+      }
+    };
   }, []);
 
-  // FIX: Keep initGoogleMap in a ref so the async script callback always
-  // calls the LATEST version, not a stale closure captured at script-append time.
-  const initGoogleMapRef = useRef<() => void>(() => {});
+  // ── 2. Handle Layer Switching ────────────────────────────────────────────────
+  const handleSelectLayer = (layer: MapLayerType) => {
+    setCurrentLayer(layer);
+    const L = LRef.current;
+    const map = leafletMapRef.current;
+    if (!map || !L) return;
 
-  // ── Auto follow on navigation start/stop ────────────────────────────────────
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+    }
+
+    const cfg = TILE_LAYERS[layer] || TILE_LAYERS['roadmap'];
+    tileLayerRef.current = L.tileLayer(cfg.url, cfg.options).addTo(map);
+  };
+
+  // ── 3. Reset North (0° Bearing) ──────────────────────────────────────────────
+  const handleResetNorth = () => {
+    const map = leafletMapRef.current;
+    if (!map) return;
+    if (typeof (map as any).setBearing === 'function') {
+      (map as any).setBearing(0);
+      setCurrentBearing(0);
+    }
+  };
+
+  // ── 4. Zoom Controls ─────────────────────────────────────────────────────────
+  const handleZoomIn = () => leafletMapRef.current?.zoomIn();
+  const handleZoomOut = () => leafletMapRef.current?.zoomOut();
+
+  // ── 5. Fit All Assigned Meters ───────────────────────────────────────────────
+  const handleFitBounds = useCallback(() => {
+    const L = LRef.current;
+    const map = leafletMapRef.current;
+    if (!map || !L || !customers.length) return;
+
+    const latLngs = customers
+      .filter((c) => c.latitude && c.longitude && !isNaN(c.latitude) && !isNaN(c.longitude))
+      .map((c) => [c.latitude, c.longitude]);
+
+    if (latLngs.length > 0) {
+      const bounds = L.latLngBounds(latLngs);
+      if (officerCoords) {
+        bounds.extend([officerCoords.latitude, officerCoords.longitude]);
+      }
+      map.fitBounds(bounds, { padding: [60, 60] });
+    }
+  }, [customers, officerCoords]);
+
+  // ── 6. Update Officer GPS Marker & Follow-Me with 360° Rotation ──────────────
   useEffect(() => {
-    if (navState?.active) {
-      setIsFollowingInternal(true);
-    } else {
-      // Reset 3D view when navigation ends without forcing zoom level reset
-      if (mapEngine === 'google' && googleMapRef.current && (window as any).google) {
-        googleMapRef.current.setTilt(0);
-        googleMapRef.current.setHeading(0);
-      }
-      setIsFollowingInternal(false);
-    }
-  }, [navState?.active, mapEngine]);
+    const L = LRef.current;
+    const map = leafletMapRef.current;
+    if (!map || !L || !officerCoords) return;
 
-  // ── disableFollowMode (stable) ───────────────────────────────────────────────
-  const disableFollowMode = useCallback(() => {
-    if (onDisableFollowRef.current) {
-      onDisableFollowRef.current();
-    }
-    setIsFollowingInternal(false);
-  }, []);
+    const pos: [number, number] = [officerCoords.latitude, officerCoords.longitude];
 
-  // ── 1. Init Leaflet fallback ─────────────────────────────────────────────────
-  const initLeafletMap = useCallback(() => {
-    if (!mapContainerRef.current || leafletMapRef.current) return;
-
-    if (!document.getElementById('leaflet-css')) {
-      const link = document.createElement('link');
-      link.id = 'leaflet-css';
-      link.rel = 'stylesheet';
-      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-      document.head.appendChild(link);
-    }
-
-    const startLeaflet = () => {
-      const L = (window as any).L;
-      if (!L || !mapContainerRef.current || leafletMapRef.current) return;
-
-      const centerLat = officerCoordsRef.current?.latitude || 21.1458;
-      const centerLng = officerCoordsRef.current?.longitude || 79.0882;
-
-      leafletMapRef.current = L.map(mapContainerRef.current, {
-        center: [centerLat, centerLng],
-        zoom: 14,
-        zoomControl: false,
-      });
-
-      leafletTileLayerRef.current = L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-        { maxZoom: 19, attribution: '© Carto Voyager' }
-      ).addTo(leafletMapRef.current);
-
-      leafletMapRef.current.on('dragstart zoomstart', () => disableFollowMode());
-      setMapEngine('leaflet');
-    };
-
-    if ((window as any).L) { startLeaflet(); return; }
-
-    const scriptId = 'leaflet-script';
-    if (!document.getElementById(scriptId)) {
-      const s = document.createElement('script');
-      s.id = scriptId;
-      s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-      s.async = true;
-      s.onload = startLeaflet;
-      s.onerror = () => setMapEngine('canvas');
-      document.head.appendChild(s);
-    }
-  }, [disableFollowMode]);
-
-  // ── 2. Init Google Maps ──────────────────────────────────────────────────────
-  const initGoogleMap = useCallback(() => {
-    if (!mapContainerRef.current || !(window as any).google || googleMapRef.current) return;
-    const google = (window as any).google;
-
-    const centerLat = officerCoordsRef.current?.latitude || 21.1458;
-    const centerLng = officerCoordsRef.current?.longitude || 79.0882;
-
-    googleMapRef.current = new google.maps.Map(mapContainerRef.current, {
-      center: { lat: centerLat, lng: centerLng },
-      zoom: 15,
-      mapTypeId: google.maps.MapTypeId.ROADMAP,
-      mapId: 'MAHAVITARAN_3D_NAV_MAP',
-      tiltInteractionEnabled: true,
-      headingInteractionEnabled: true,
-      tilt: 0,
-      heading: 0,
-      disableDefaultUI: true,
-      gestureHandling: 'greedy',
-      clickableIcons: false,
+    const officerIcon = L.divIcon({
+      html: buildOfficerMarkerHtml(officerHeading),
+      className: 'officer-marker-div',
+      iconSize: [48, 48],
+      iconAnchor: [24, 24],
     });
-
-    infoWindowRef.current = new google.maps.InfoWindow({
-      disableAutoPan: true,
-    });
-    infoWindowRef.current.addListener('closeclick', () => {
-      lastOpenWindowFingerprintRef.current = null;
-      if (onSelectCustomerRef.current) {
-        onSelectCustomerRef.current(null);
-      }
-    });
-    directionsServiceRef.current = new google.maps.DirectionsService();
-
-    directionsRendererRef.current = new google.maps.DirectionsRenderer({
-      map: googleMapRef.current,
-      suppressMarkers: true,
-      preserveViewport: true,
-      polylineOptions: {
-        strokeColor: '#0284c7',
-        strokeWeight: 6,
-        strokeOpacity: 0.9,
-        zIndex: 990,
-      },
-    });
-
-    // Listen to manual 2-finger heading rotation & 3D tilt gestures
-    googleMapRef.current.addListener('heading_changed', () => {
-      const h = googleMapRef.current.getHeading() || 0;
-      setMapHeading(h);
-    });
-
-    googleMapRef.current.addListener('tilt_changed', () => {
-      const t = googleMapRef.current.getTilt() || 0;
-      setIs3D(t > 0);
-    });
-
-    // Mark user interaction & disable follow on user drag or zoom
-    googleMapRef.current.addListener('dragstart', () => {
-      userHasInteractedRef.current = true;
-      disableFollowMode();
-    });
-    googleMapRef.current.addListener('zoom_changed', () => {
-      if (isProgrammaticZoomRef.current) {
-        isProgrammaticZoomRef.current = false;
-        return;
-      }
-      userHasInteractedRef.current = true;
-      disableFollowMode();
-    });
-
-    setMapEngine('google');
-  }, [disableFollowMode]);
-
-  // Keep ref in sync with latest initGoogleMap
-  useEffect(() => { initGoogleMapRef.current = initGoogleMap; }, [initGoogleMap]);
-
-  // ── 3. Google Maps auth failure handler ─────────────────────────────────────
-  useEffect(() => {
-    (window as any).gm_authFailure = () => {
-      console.error('Google Maps API key auth failure — falling back to Leaflet.');
-      setMapError('Google Maps API key error. Using OpenStreetMap fallback.');
-      // Destroy broken google map container state and switch to Leaflet
-      googleMapRef.current = null;
-      initLeafletMap();
-    };
-  }, [initLeafletMap]);
-
-  // ── 4. Load Google Maps Script ───────────────────────────────────────────────
-  useEffect(() => {
-    if (!apiKey || apiKey === 'YOUR_GOOGLE_MAPS_API_KEY_HERE') {
-      initLeafletMap();
-      return;
-    }
-
-    // Already loaded
-    if ((window as any).google?.maps) {
-      initGoogleMap();
-      return;
-    }
-
-    const scriptId = 'google-maps-script';
-    if (document.getElementById(scriptId)) {
-      // Script tag exists but google not ready yet — wait
-      const existing = document.getElementById(scriptId);
-      existing?.addEventListener('load', initGoogleMap);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.id = scriptId;
-    // Using 'weekly' channel ensures latest stable API. No deprecated libraries.
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,geometry&v=weekly&callback=__mahavitaranMapReady`;
-    script.async = true;
-    script.defer = true;
-
-    // FIX: Use initGoogleMapRef.current so the callback always calls the
-    // latest version of initGoogleMap, not a stale closure from before any re-renders.
-    (window as any).__mahavitaranMapReady = () => {
-      initGoogleMapRef.current();
-      delete (window as any).__mahavitaranMapReady;
-    };
-
-    script.onerror = () => {
-      console.error('Failed to load Google Maps script — falling back to Leaflet.');
-      setMapError('Map failed to load. Using OpenStreetMap.');
-      initLeafletMap();
-    };
-
-    document.head.appendChild(script);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey]);
-
-  // ── 5. Draw Route Lines (Multi-Stop Polyline + Single Directions) ───────────────
-  useEffect(() => {
-    if (mapEngine !== 'google' || !googleMapRef.current) return;
-    const google = (window as any).google;
-    if (!google) return;
-
-    const isActivelyNavigating = !!navState?.active;
-
-    // 1. MULTI-STOP ROUTE FOR ALL METERS (Filtered DTC or Multi-Stop Route)
-    // Always prefer multiRoute.coordinates_path so the route connecting ALL meters in sequence is displayed!
-    const multiPathCoords = (multiRoute?.coordinates_path && multiRoute.coordinates_path.length >= 2)
-      ? multiRoute.coordinates_path
-      : (route?.coordinates_path && route.coordinates_path.length >= 2)
-      ? route.coordinates_path
-      : null;
-
-    const drawFallbackPolyline = (coords: Coordinates[]) => {
-      if (!googleMapRef.current) return;
-      const pathLatLngs = coords
-        .map((pt: any) => {
-          const lat = typeof pt.latitude === 'number' ? pt.latitude : (typeof pt.lat === 'number' ? pt.lat : null);
-          const lng = typeof pt.longitude === 'number' ? pt.longitude : (typeof pt.lng === 'number' ? pt.lng : null);
-          if (lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
-            return new google.maps.LatLng(lat, lng);
-          }
-          return null;
-        })
-        .filter(Boolean);
-
-      if (pathLatLngs.length >= 2) {
-        if (!fallbackPolylineRef.current) {
-          fallbackPolylineRef.current = new google.maps.Polyline({
-            map: googleMapRef.current,
-            path: pathLatLngs,
-            strokeColor: '#0284c7',
-            strokeWeight: 6,
-            strokeOpacity: 0.85,
-            zIndex: 9999,
-          });
-        } else {
-          fallbackPolylineRef.current.setPath(pathLatLngs);
-          fallbackPolylineRef.current.setMap(googleMapRef.current);
-        }
-
-        // Auto-fit camera bounds ONLY ONCE when customer list filter changes and user hasn't manually zoomed/panned
-        const customerIdsKey = customers.map((c) => c.customer_id).sort().join(',');
-        if (customerIdsKey !== lastFittedMultiRouteRef.current) {
-          lastFittedMultiRouteRef.current = customerIdsKey;
-          if (!userHasInteractedRef.current) {
-            const bounds = new google.maps.LatLngBounds();
-            pathLatLngs.forEach((pt: any) => bounds.extend(pt));
-            if (!bounds.isEmpty()) {
-              isProgrammaticZoomRef.current = true;
-              googleMapRef.current.fitBounds(bounds, { top: 90, bottom: 90, left: 90, right: 90 });
-            }
-          }
-        }
-      }
-    };
-
-    // Render the complete route connecting ALL meters in the filtered set
-    if (multiPathCoords) {
-      drawFallbackPolyline(multiPathCoords);
-    } else if (fallbackPolylineRef.current) {
-      fallbackPolylineRef.current.setMap(null);
-    }
-
-    // 2. TURN-BY-TURN DIRECTIONS SERVICE
-    // When actively navigating: route specifically to the target destination customer (navState.targetCustomer)
-    // When not navigating: route to selectedCustomer if one is selected for preview
-    const dest = isActivelyNavigating ? navState.targetCustomer : (selectedCustomer || null);
-    const isDestCollected = dest && (dest.status === 'paid' || (dest.pending_amount !== undefined && dest.pending_amount <= 0));
-
-    if (!directionsServiceRef.current || !directionsRendererRef.current || !dest || isDestCollected) {
-      if (directionsRendererRef.current) {
-        directionsRendererRef.current.setMap(null);
-      }
-      return;
-    }
-
-    const originLat = officerCoords?.latitude ?? 21.1458;
-    const originLng = officerCoords?.longitude ?? 79.0882;
-
-    const fingerprint = `${originLat.toFixed(3)}_${originLng.toFixed(3)}_${dest.customer_id}`;
-    if (fingerprint === lastDirectionsKeyRef.current) return;
-    lastDirectionsKeyRef.current = fingerprint;
-
-    const request = {
-      origin: new google.maps.LatLng(originLat, originLng),
-      destination: new google.maps.LatLng(dest.latitude, dest.longitude),
-      travelMode: google.maps.TravelMode.DRIVING,
-      unitSystem: google.maps.UnitSystem.METRIC,
-    };
-
-    directionsServiceRef.current.route(request, (result: any, status: any) => {
-      if (status === google.maps.DirectionsStatus.OK && result && result.routes && result.routes.length > 0) {
-        directionsRendererRef.current.setOptions({ preserveViewport: true });
-        directionsRendererRef.current.setMap(googleMapRef.current);
-        directionsRendererRef.current.setDirections(result);
-
-        // Keep fallbackPolylineRef active if multiRoute exists so ALL meters remain connected on map
-        if (!multiRoute && fallbackPolylineRef.current) {
-          fallbackPolylineRef.current.setMap(null);
-        }
-
-        if (onDirectionsCalculatedRef.current) {
-          const route0 = result.routes[0];
-          const leg0 = route0.legs && route0.legs.length > 0 ? route0.legs[0] : null;
-
-          const steps = leg0 && leg0.steps ? leg0.steps.map((s: any) => ({
-            instruction: s.instructions ? s.instructions.replace(/<[^>]*>/g, '') : '',
-            distance_text: s.distance ? s.distance.text : '',
-            duration_text: s.duration ? s.duration.text : '',
-            start_location: s.start_location ? { latitude: s.start_location.lat(), longitude: s.start_location.lng() } : undefined,
-            end_location: s.end_location ? { latitude: s.end_location.lat(), longitude: s.end_location.lng() } : undefined,
-          })) : [];
-
-          const pathCoords: Coordinates[] = route0.overview_path ? route0.overview_path.map((pt: any) => ({
-            latitude: pt.lat(),
-            longitude: pt.lng(),
-          })) : [];
-
-          onDirectionsCalculatedRef.current({
-            distance_meters: leg0 && leg0.distance ? leg0.distance.value : 0,
-            distance_text: leg0 && leg0.distance ? leg0.distance.text : '0 m',
-            duration_seconds: leg0 && leg0.duration ? leg0.duration.value : 0,
-            duration_text: leg0 && leg0.duration ? leg0.duration.text : '0 min',
-            start_address: leg0 ? leg0.start_address : '',
-            end_address: leg0 ? leg0.end_address : '',
-            encoded_polyline: route0.overview_polyline || '',
-            coordinates_path: pathCoords,
-            steps,
-          });
-        }
-      } else {
-        // Directions API failed/denied (e.g. REQUEST_DENIED or rate-limited on development keys)
-        // Ensure the fallback polyline stays visible on the map so navigation NEVER vanishes!
-        if (directionsRendererRef.current) {
-          directionsRendererRef.current.setMap(null);
-        }
-        if (multiPathCoords) {
-          drawFallbackPolyline(multiPathCoords);
-        }
-      }
-    });
-  }, [
-    mapEngine,
-    officerCoords,
-    navState?.targetCustomer,
-    selectedCustomer,
-    multiRoute,
-    activeStopIndex,
-    navState?.active,
-    route,
-  ]);
-
-  // ── 6. Officer GPS Marker + Follow-Me Camera ─────────────────────────────────
-  useEffect(() => {
-    if (mapEngine !== 'google' || !googleMapRef.current || !(window as any).google || !officerCoords) return;
-    const google = (window as any).google;
-
-    const pos = { lat: officerCoords.latitude, lng: officerCoords.longitude };
 
     if (!officerMarkerRef.current) {
-      officerMarkerRef.current = new google.maps.Marker({
-        position: pos,
-        map: googleMapRef.current,
-        title: 'You (Field Officer)',
-        icon: createOfficerMarkerIcon(google, officerHeading),
-        zIndex: 1000,
-      });
+      officerMarkerRef.current = L.marker(pos, { icon: officerIcon, zIndexOffset: 2000 }).addTo(map);
     } else {
-      officerMarkerRef.current.setPosition(pos);
-      officerMarkerRef.current.setIcon(createOfficerMarkerIcon(google, officerHeading));
+      officerMarkerRef.current.setLatLng(pos);
+      officerMarkerRef.current.setIcon(officerIcon);
     }
 
-    // Follow-Me: pan camera without forcing constant zoom level reset
+    // Follow-Me & 360° Rotate bearing update
     if (isFollowing) {
-      googleMapRef.current.panTo(pos);
-      if (navState?.active) {
-        googleMapRef.current.setTilt(45);
-        if (officerHeading !== null && officerHeading !== undefined && !isNaN(officerHeading)) {
-          googleMapRef.current.setHeading(officerHeading);
-        }
-      } else {
-        googleMapRef.current.setTilt(0);
+      map.panTo(pos, { animate: true, duration: 0.5 });
+      if (typeof (map as any).setBearing === 'function' && officerHeading !== null && officerHeading !== undefined) {
+        (map as any).setBearing(officerHeading);
+        setCurrentBearing(officerHeading);
       }
     }
-  }, [mapEngine, officerCoords, officerHeading, isFollowing, navState?.active]);
+  }, [mapReady, officerCoords, officerHeading, isFollowing]);
 
-  // ── 7. Customer Markers (Google Maps) ───────────────────────────────────────
+  // ── 7. Render Consumer Markers & Popups ───────────────────────────────────────
   useEffect(() => {
-    if (mapEngine !== 'google' || !googleMapRef.current || !(window as any).google) return;
-    const google = (window as any).google;
+    const L = LRef.current;
+    const map = leafletMapRef.current;
+    if (!map || !L) return;
 
     const currentIds = new Set(customers.map((c) => c.customer_id));
 
     // Remove stale markers
     customerMarkersRef.current.forEach((marker, id) => {
       if (!currentIds.has(id)) {
-        marker.setMap(null);
+        map.removeLayer(marker);
         customerMarkersRef.current.delete(id);
       }
     });
 
     customers.forEach((customer) => {
+      if (!customer.latitude || !customer.longitude) return;
+
       const isSelected = selectedCustomer?.customer_id === customer.customer_id;
       const multiStop = multiRoute?.stops?.find((s) => s.customer_id === customer.customer_id);
       const isCurrentStop = multiStop && (multiStop.sequence - 1) === activeStopIndex;
 
-      const svgStr = buildConsumerMarkerSvg(
+      const markerHtml = buildConsumerMarkerHtml(
         customer.status,
         customer.priority,
         isSelected || !!isCurrentStop,
@@ -697,288 +448,179 @@ export default function MapView({
         customer.meter_number
       );
 
-      const icon = {
-        url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svgStr),
-        scaledSize: new google.maps.Size(isSelected ? 84 : 74, isSelected ? 66 : 56),
-        anchor: new google.maps.Point(isSelected ? 42 : 37, isSelected ? 48 : 38),
-      };
+      const icon = L.divIcon({
+        html: markerHtml,
+        className: 'customer-marker-div',
+        iconSize: [74, customer.meter_number ? 56 : 40],
+        iconAnchor: [37, 38],
+      });
 
-      const pos = { lat: customer.latitude, lng: customer.longitude };
+      const pos: [number, number] = [customer.latitude, customer.longitude];
       let marker = customerMarkersRef.current.get(customer.customer_id);
 
+      const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
+      const daysText = rawPendingDays !== undefined && rawPendingDays !== null ? `${rawPendingDays} Days` : '-';
+      const isHighPending = Number(rawPendingDays) > 30;
+
+      const popupHtml = `
+        <div style="min-width: 210px; max-width: 250px; padding: 12px; font-family: system-ui, sans-serif;">
+          <div style="margin-bottom: 6px;">
+            <div style="font-weight: 800; font-size: 13px; color: #f8fafc; line-height: 1.2;">${customer.name}</div>
+            <div style="font-size: 11px; color: #94a3b8; font-weight: 600; margin-top: 2px;">
+              Meter: <span style="color: #38bdf8; font-family: monospace; font-weight: 800;">${customer.meter_number}</span>
+            </div>
+            ${customer.dtc_code ? `<div style="font-size: 10px; color: #cbd5e1;">DTC: <span style="color: #fbbf24; font-weight: 700;">${customer.dtc_code}</span></div>` : ''}
+          </div>
+
+          <div style="margin: 6px 0; padding: 6px 8px; background: ${isHighPending ? 'rgba(239, 68, 68, 0.15)' : 'rgba(34, 197, 94, 0.15)'}; border: 1px solid ${isHighPending ? '#ef4444' : '#22c55e'}; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-size: 9.5px; color: #e2e8f0; font-weight: 800; text-transform: uppercase;">Pending Days</span>
+            <span style="font-size: 12px; font-weight: 900; color: ${isHighPending ? '#f87171' : '#4ade80'};">${daysText}</span>
+          </div>
+
+          <div style="margin: 6px 0 8px; padding: 6px 8px; background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-size: 9.5px; color: #fde68a; font-weight: 800; text-transform: uppercase;">Outstanding</span>
+            <span style="font-size: 13px; font-weight: 900; color: #fbbf24;">₹${customer.pending_amount.toLocaleString('en-IN')}</span>
+          </div>
+
+          <button
+            id="leaflet-collect-btn-${customer.customer_id}"
+            style="width: 100%; padding: 7px 10px; background: #059669; color: #ffffff; border: none; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: background 0.2s;"
+            onmouseover="this.style.background='#047857'"
+            onmouseout="this.style.background='#059669'"
+          >
+            Collect Payment
+          </button>
+        </div>
+      `;
+
       if (marker) {
-        marker.setPosition(pos);
+        marker.setLatLng(pos);
         marker.setIcon(icon);
-        marker.setZIndex(isSelected || isCurrentStop ? 999 : 100);
+        marker.setZIndexOffset(isSelected || isCurrentStop ? 1000 : 100);
+        marker.getPopup()?.setContent(popupHtml);
       } else {
-        marker = new google.maps.Marker({
-          position: pos,
-          map: googleMapRef.current,
-          title: `${customer.name} — Meter: ${customer.meter_number}`,
-          icon,
-          zIndex: isSelected || isCurrentStop ? 999 : 100,
+        marker = L.marker(pos, { icon, zIndexOffset: isSelected || isCurrentStop ? 1000 : 100 }).addTo(map);
+
+        const popup = L.popup({
+          offset: [0, -32],
+          closeButton: true,
+          className: 'leaflet-custom-popup',
+        }).setContent(popupHtml);
+
+        marker.bindPopup(popup);
+
+        marker.on('click', () => {
+          onSelectCustomer(customer);
+          speakInstruction(customer.name, isMuted);
         });
 
-        marker.addListener('click', () => {
-          onSelectCustomerRef.current(customer);
-          showInfoWindowForCustomer(customer, marker);
-          speakInstruction(customer.name, isMuted);
+        marker.on('popupopen', () => {
+          const btn = document.getElementById(`leaflet-collect-btn-${customer.customer_id}`);
+          if (btn) {
+            btn.onclick = (e) => {
+              e.stopPropagation();
+              if (onCollectPayment) onCollectPayment(customer);
+            };
+          }
         });
 
         customerMarkersRef.current.set(customer.customer_id, marker);
       }
+
+      if (isSelected) {
+        marker.openPopup();
+      }
     });
+  }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment]);
 
-    if (selectedCustomer) {
-      const selectedMarker = customerMarkersRef.current.get(selectedCustomer.customer_id);
-      if (selectedMarker) {
-        showInfoWindowForCustomer(selectedCustomer, selectedMarker);
-      }
-    } else {
-      if (infoWindowRef.current && lastOpenWindowFingerprintRef.current !== null) {
-        infoWindowRef.current.close();
-        lastOpenWindowFingerprintRef.current = null;
-      }
-    }
-  }, [mapEngine, customers, selectedCustomer, multiRoute, activeStopIndex, showInfoWindowForCustomer, isMuted]);
-
-
-
-  // ── 8. Leaflet Fallback: Officer + Customers + Route ─────────────────────────
+  // ── 8. Draw OSRM Polyline Routes on Leaflet ──────────────────────────────────
   useEffect(() => {
-    if (mapEngine !== 'leaflet' || !leafletMapRef.current || !(window as any).L) return;
-    const L = (window as any).L;
+    const L = LRef.current;
+    const map = leafletMapRef.current;
+    if (!map || !L) return;
 
-    // Officer marker
-    if (officerCoords) {
-      if (leafletOfficerMarkerRef.current) leafletOfficerMarkerRef.current.remove();
-      leafletOfficerMarkerRef.current = L.circleMarker(
-        [officerCoords.latitude, officerCoords.longitude],
-        { radius: 10, fillColor: '#0284c7', color: '#fff', weight: 2, fillOpacity: 1 }
-      ).addTo(leafletMapRef.current);
-      if (isFollowing) {
-        leafletMapRef.current.panTo([officerCoords.latitude, officerCoords.longitude]);
-      }
+    // Remove existing route polylines
+    if (routePolylineCasingRef.current) {
+      map.removeLayer(routePolylineCasingRef.current);
+      routePolylineCasingRef.current = null;
+    }
+    if (routePolylineRef.current) {
+      map.removeLayer(routePolylineRef.current);
+      routePolylineRef.current = null;
     }
 
-    // Customer markers
-    leafletMarkersRef.current.forEach((m) => m.remove());
-    leafletMarkersRef.current.clear();
-    customers.forEach((customer) => {
-      const isSelected = selectedCustomer?.customer_id === customer.customer_id;
-      const marker = L.circleMarker([customer.latitude, customer.longitude], {
-        radius: isSelected ? 12 : 8,
-        fillColor: isSelected ? '#0284c7' : '#f59e0b',
-        color: '#fff', weight: 2, fillOpacity: 1,
-      }).addTo(leafletMapRef.current);
-      marker.bindTooltip(`<b>${customer.meter_number}</b>`, { permanent: true, direction: 'top' });
-      marker.on('click', () => {
-        onSelectCustomerRef.current(customer);
-        speakInstruction(customer.name, isMuted);
-      });
-      leafletMarkersRef.current.set(customer.customer_id, marker);
-    });
-
-    // Route polyline (Leaflet fallback uses backend coordinates)
-    if (leafletRoutePoly.current) { leafletRoutePoly.current.remove(); leafletRoutePoly.current = null; }
     const activePath = multiRoute?.coordinates_path?.length
       ? multiRoute.coordinates_path
       : route?.coordinates_path?.length
       ? route.coordinates_path
       : null;
-    if (activePath) {
-      leafletRoutePoly.current = L.polyline(
-        activePath.map((p) => [p.latitude, p.longitude]),
-        { color: '#0284c7', weight: 5, opacity: 0.85 }
-      ).addTo(leafletMapRef.current);
-    }
-  }, [mapEngine, officerCoords, customers, selectedCustomer, route, multiRoute, isFollowing, navState?.active]);
 
-  // ── 9. Map Layer Switcher ────────────────────────────────────────────────────
-  const handleSelectLayer = (layer: MapLayerType) => {
-    setCurrentLayer(layer);
-    if (mapEngine === 'google' && googleMapRef.current && (window as any).google) {
-      const google = (window as any).google;
-      const typeMap: Record<MapLayerType, any> = {
-        roadmap: google.maps.MapTypeId.ROADMAP,
-        satellite: google.maps.MapTypeId.SATELLITE,
-        hybrid: google.maps.MapTypeId.HYBRID,
-        terrain: google.maps.MapTypeId.TERRAIN,
-      };
-      googleMapRef.current.setMapTypeId(typeMap[layer]);
-    } else if (mapEngine === 'leaflet' && leafletTileLayerRef.current) {
-      const urls: Record<MapLayerType, string> = {
-        roadmap: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-        satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        hybrid: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        terrain: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-      };
-      leafletTileLayerRef.current.setUrl(urls[layer]);
-    }
-  };
+    if (activePath && activePath.length >= 2) {
+      const latLngs = activePath.map((p) => [p.latitude, p.longitude]);
 
-  // ── 10. Fit All Bounds ───────────────────────────────────────────────────────
-  const handleFitAllBounds = () => {
-    userHasInteractedRef.current = false;
-    if (mapEngine === 'google' && googleMapRef.current && (window as any).google) {
-      const bounds = new (window as any).google.maps.LatLngBounds();
-      if (officerCoords) bounds.extend({ lat: officerCoords.latitude, lng: officerCoords.longitude });
-      customers.forEach((c) => bounds.extend({ lat: c.latitude, lng: c.longitude }));
-      if (!bounds.isEmpty()) {
-        isProgrammaticZoomRef.current = true;
-        googleMapRef.current.fitBounds(bounds);
+      // Outer glowing casing line
+      routePolylineCasingRef.current = L.polyline(latLngs, {
+        color: '#0284c7',
+        weight: 8,
+        opacity: 0.45,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+
+      // Inner crisp electric blue route line
+      routePolylineRef.current = L.polyline(latLngs, {
+        color: '#38bdf8',
+        weight: 4.5,
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+
+      // If not actively following officer GPS, auto fit to route
+      if (!isFollowing) {
+        map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50] });
       }
-    } else if (mapEngine === 'leaflet' && leafletMapRef.current && (window as any).L) {
-      const L = (window as any).L;
-      const pts: [number, number][] = [];
-      if (officerCoords) pts.push([officerCoords.latitude, officerCoords.longitude]);
-      customers.forEach((c) => pts.push([c.latitude, c.longitude]));
-      if (pts.length > 0) leafletMapRef.current.fitBounds(L.latLngBounds(pts), { padding: [50, 50] });
     }
-  };
-
-  // ── 11. Zoom controls ────────────────────────────────────────────────────────
-  const handleZoomIn = () => {
-    userHasInteractedRef.current = true;
-    disableFollowMode();
-    if (mapEngine === 'google' && googleMapRef.current) {
-      const currentZoom = googleMapRef.current.getZoom() || 15;
-      googleMapRef.current.setZoom(Math.min(currentZoom + 1, 21));
-    } else if (mapEngine === 'leaflet' && leafletMapRef.current) {
-      leafletMapRef.current.zoomIn();
-    }
-  };
-
-  const handleZoomOut = () => {
-    userHasInteractedRef.current = true;
-    disableFollowMode();
-    if (mapEngine === 'google' && googleMapRef.current) {
-      const currentZoom = googleMapRef.current.getZoom() || 15;
-      googleMapRef.current.setZoom(Math.max(currentZoom - 1, 3));
-    } else if (mapEngine === 'leaflet' && leafletMapRef.current) {
-      leafletMapRef.current.zoomOut();
-    }
-  };
-
-  // ── 12. Compass Reset True North ──────────────────────────────────────────────
-  const handleResetNorth = () => {
-    if (mapEngine === 'google' && googleMapRef.current && (window as any).google) {
-      googleMapRef.current.setHeading(0);
-      googleMapRef.current.setTilt(0);
-      if (officerCoords) {
-        googleMapRef.current.panTo({ lat: officerCoords.latitude, lng: officerCoords.longitude });
-      }
-    } else if (officerCoords && leafletMapRef.current) {
-      leafletMapRef.current.setView([officerCoords.latitude, officerCoords.longitude]);
-    }
-  };
-
-  // ── 13. 3D Perspective Tilt Toggle ──────────────────────────────────────────
-  const handleToggle3DTilt = () => {
-    if (mapEngine === 'google' && googleMapRef.current) {
-      const currentTilt = googleMapRef.current.getTilt() || 0;
-      const nextTilt = currentTilt > 0 ? 0 : 45;
-      googleMapRef.current.setTilt(nextTilt);
-      setIs3D(nextTilt > 0);
-    }
-  };
-
-  // ── 14. Re-center / Follow Toggle ───────────────────────────────────────────
-  const toggleFollowMode = () => {
-    if (onToggleFollow) {
-      onToggleFollow();
-    } else {
-      setIsFollowingInternal((prev) => !prev);
-    }
-    // Snap camera to officer position immediately
-    if (officerCoords && googleMapRef.current && (window as any).google) {
-      googleMapRef.current.panTo({ lat: officerCoords.latitude, lng: officerCoords.longitude });
-      googleMapRef.current.setZoom(navState?.active ? 17 : 15);
-      googleMapRef.current.setTilt(0);
-    } else if (officerCoords && leafletMapRef.current) {
-      leafletMapRef.current.setView([officerCoords.latitude, officerCoords.longitude], 15);
-    }
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────────
+  }, [mapReady, route, multiRoute, isFollowing]);
 
   return (
-    <div className="relative w-full h-full bg-slate-950 overflow-hidden select-none">
-      {/* Map tile container */}
-      <div ref={mapContainerRef} className="w-full h-full z-0" />
-
-      {/* API error banner */}
-      {mapError && (
-        <div className="absolute top-2 left-2 right-2 z-50 bg-amber-500/95 text-slate-950 text-xs font-bold px-3 py-2 rounded-xl shadow-lg flex items-center gap-2">
-          <span>⚠️</span>
-          <span>{mapError}</span>
-          <button onClick={() => setMapError(null)} className="ml-auto text-slate-900 hover:text-slate-700">✕</button>
-        </div>
-      )}
-
-      {/* Navigation Panel */}
-      {navState && (
-        <NavigationPanel
-          navState={navState}
-          onExitNavigation={onExitNavigation || (() => {})}
-          onCollectPayment={onCollectPayment}
-          isMuted={isMuted}
-          onToggleMute={handleToggleMute}
-          multiRoute={multiRoute}
-          currentStopIndex={activeStopIndex}
-          onSelectStopIndex={onSelectStopIndex}
-        />
-      )}
-
-      {/* Floating Compass Rose (Appears automatically when map is rotated via two-finger twist) */}
-      {Math.round(mapHeading || 0) !== 0 && (
-        <button
-          onClick={handleResetNorth}
-          className="absolute top-20 right-4 z-40 bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-full px-3 py-2 shadow-xl flex items-center gap-2 text-xs font-bold text-slate-800 hover:bg-slate-50 transition-all hover:scale-105 active:scale-95 animate-in fade-in zoom-in-95 cursor-pointer"
-          title="Map is rotated. Tap to reset to True North"
-        >
-          <div
-            className="w-5 h-5 flex items-center justify-center transition-transform duration-200"
-            style={{ transform: `rotate(${-(mapHeading || 0)}deg)` }}
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5 drop-shadow-xs">
-              <polygon points="12,2 16,12 12,9" fill="#ef4444" />
-              <polygon points="12,2 8,12 12,9" fill="#dc2626" />
-              <polygon points="12,22 16,12 12,15" fill="#94a3b8" />
-              <polygon points="12,22 8,12 12,15" fill="#64748b" />
-            </svg>
-          </div>
-          <span className="text-[11px] font-black text-slate-700 font-mono">
-            {((Math.round(mapHeading || 0) % 360) + 360) % 360}° N
-          </span>
-        </button>
-      )}
-
-      {/* Floating Map Controls */}
-      <MapControls
-        currentLayer={currentLayer}
-        isFollowing={isFollowing}
-        is3D={is3D}
-        officerHeading={mapHeading || officerHeading}
-        onToggleFollow={toggleFollowMode}
-        onSelectLayer={handleSelectLayer}
-        onFitBounds={handleFitAllBounds}
-        onResetNorth={handleResetNorth}
-        onToggle3D={handleToggle3DTilt}
-        onOpenStreetView={
-          selectedCustomer && onOpenStreetView
-            ? () => onOpenStreetView(selectedCustomer)
-            : undefined
-        }
-        onZoomIn={handleZoomIn}
-        onZoomOut={handleZoomOut}
-        isMuted={isMuted}
-        onToggleMute={handleToggleMute}
+    <div className="relative w-full h-full flex flex-col overflow-hidden bg-slate-950">
+      {/* Leaflet Map Canvas with 360° Two-Finger Rotation */}
+      <div
+        ref={mapContainerRef}
+        className="w-full h-full z-0 outline-none select-none"
+        style={{ touchAction: 'none' }}
+        tabIndex={0}
       />
 
-      {/* 360° Street View Modal */}
-      {streetView && onCloseStreetView && (
-        <StreetViewModal streetView={streetView} onClose={onCloseStreetView} />
+      {/* Floating 360° Compass & Map Controls */}
+      <div className="absolute right-4 bottom-6 z-20 flex flex-col items-end gap-2">
+        <MapControls
+          currentLayer={currentLayer}
+          isFollowing={isFollowing}
+          officerHeading={currentBearing}
+          isMuted={isMuted}
+          onToggleMute={handleToggleMute}
+          onToggleFollow={onToggleFollow || (() => setIsFollowingInternal((prev) => !prev))}
+          onSelectLayer={handleSelectLayer}
+          onFitBounds={handleFitBounds}
+          onResetNorth={handleResetNorth}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+        />
+      </div>
+
+      {/* Active Navigation Panel (Turn-by-turn guidance from OSRM) */}
+      {navState && navState.active && (
+        <div className="absolute bottom-6 left-4 right-4 md:left-6 md:right-auto md:w-96 z-30 animate-in slide-in-from-bottom-4 duration-300">
+          <NavigationPanel
+            navState={navState}
+            onExitNavigation={onExitNavigation || (() => {})}
+            onCollectPayment={() => onCollectPayment && onCollectPayment(navState.targetCustomer)}
+            isMuted={isMuted}
+            onToggleMute={handleToggleMute}
+          />
+        </div>
       )}
     </div>
   );

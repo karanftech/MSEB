@@ -12,11 +12,13 @@ interface BulkUploadModalProps {
 
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [replaceAll, setReplaceAll] = useState<boolean>(true);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadResult, setUploadResult] = useState<{
     total_processed: number;
     inserted_count: number;
     updated_count: number;
+    deleted_count: number;
     errors: string[];
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -67,7 +69,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setErrorMessage(null);
 
     try {
-      const res = await customerService.uploadCustomers(selectedFile);
+      const res = await customerService.uploadCustomers(selectedFile, replaceAll);
       setUploadResult(res);
       window.dispatchEvent(new Event('customers-updated'));
       onSuccess();
@@ -152,6 +154,33 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             </p>
           </div>
 
+          {/* Database Replace Mode Toggle */}
+          {!uploadResult && (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 flex items-center justify-between">
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={replaceAll}
+                  onChange={(e) => setReplaceAll(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-bold text-slate-800">Replace all old data</span>
+                  <span className="text-[11px] text-slate-500 block">
+                    {replaceAll
+                      ? 'Wipes existing customer & meter records before importing the new file.'
+                      : 'Keep existing records and update matching consumer IDs (additive import).'}
+                  </span>
+                </div>
+              </label>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
+                replaceAll ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-slate-200 text-slate-600'
+              }`}>
+                {replaceAll ? 'Replace Mode' : 'Append Mode'}
+              </span>
+            </div>
+          )}
+
           {/* Upload Drop Zone */}
           {!uploadResult && (
             <div
@@ -219,8 +248,12 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                     <div className="text-[11px] text-slate-500 font-medium uppercase">New Customers</div>
                   </div>
                   <div className="bg-white border border-green-200 p-2.5 rounded-md">
-                    <div className="text-lg font-extrabold text-blue-600">{(uploadResult as any).deleted_count ?? 0}</div>
-                    <div className="text-[11px] text-slate-500 font-medium uppercase">Replaced Old</div>
+                    <div className="text-lg font-extrabold text-blue-600">
+                      {uploadResult.deleted_count > 0 ? uploadResult.deleted_count : uploadResult.updated_count}
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-medium uppercase">
+                      {uploadResult.deleted_count > 0 ? 'Replaced Old' : 'Updated Existing'}
+                    </div>
                   </div>
                 </div>
               </div>

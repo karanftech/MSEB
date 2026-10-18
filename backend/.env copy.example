@@ -1,7 +1,11 @@
-MONGODB_URI=mongodb://localhost:27017
-DATABASE_NAME=electricity_collection
+# Database Engine: PostgreSQL 18 (Hosted on Neon Cloud)
+# GIS Extension: PostGIS 3.6 (geometry(Point, 4326))
+DATABASE_URL=postgresql+asyncpg://neondb_owner:YOUR_PASSWORD@ep-sample-pooler.us-east-2.aws.neon.tech/neondb?ssl=require
+
+# Open Source Routing Machine (OSRM) API v1
+OSRM_BASE_URL=https://router.project-osrm.org
+
 JWT_SECRET=your_jwt_secret_key_here
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=480
-GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
-ALLOWED_ORIGINS=http://localhost:3000
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

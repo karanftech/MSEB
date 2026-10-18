@@ -19,7 +19,6 @@ import { customerService } from '@/services/customerService';
 import { routeService } from '@/services/routeService';
 import { useGeolocation } from '@/hooks/useGeolocation';
 import { useNavigation } from '@/hooks/useNavigation';
-import { useStreetView } from '@/hooks/useStreetView';
 import { calculateHaversineDistance } from '@/utils/geo';
 import { matchCustomerFilters } from '@/utils/formatters';
 
@@ -47,8 +46,6 @@ function MapPageContent() {
     toggleFollow,
     disableFollow,
   } = useNavigation({ offRouteThresholdMeters: 75 });
-
-  const { streetView, openStreetView, closeStreetView } = useStreetView();
 
   const [allCustomers, setAllCustomers] = useState<Customer[]>([]);
   const [isLoadingCustomers, setIsLoadingCustomers] = useState<boolean>(true);
@@ -374,13 +371,6 @@ function MapPageContent() {
     [isMultiNavigating, multiRoute]
   );
 
-  const handleOpenCustomerStreetView = React.useCallback(
-    (c: Customer) => {
-      openStreetView(c.latitude, c.longitude, c.name, c.address);
-    },
-    [openStreetView]
-  );
-
   const handleCollectPaymentModalOpen = React.useCallback((customer?: Customer) => {
     if (customer) {
       setSelectedCustomer(customer);
@@ -440,12 +430,9 @@ function MapPageContent() {
           multiRoute={(isMultiNavigating || isDtcFiltered) ? multiRoute : null}
           activeStopIndex={currentStopIndex}
           navState={navStateObj}
-          streetView={streetView}
           onSelectCustomer={handleSelectMapCustomer}
           onExitNavigation={handleStopMultiNavigation}
           onCollectPayment={handleCollectPaymentModalOpen}
-          onOpenStreetView={handleOpenCustomerStreetView}
-          onCloseStreetView={closeStreetView}
           onToggleFollow={toggleFollow}
           onDisableFollow={disableFollow}
           onDirectionsCalculated={setNavigationRoute}

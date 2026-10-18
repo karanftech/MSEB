@@ -8,7 +8,6 @@ import OfflineSyncBanner from '@/components/offline/OfflineSyncBanner';
 import MahavitaranPageLoader from '@/components/ui/MahavitaranPageLoader';
 
 const AUTH_PAGES = ['/login', '/register'];
-const PUBLIC_PAGES = ['/', '/login', '/register'];
 
 function readAuthFromStorage(): boolean {
   if (typeof window === 'undefined') return false;
@@ -58,21 +57,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     setAuthChecked(true);
 
     // If trying to access a protected page without auth, redirect to login
-    if (!authenticated && !AUTH_PAGES.includes(pathname)) {
+    if (!authenticated && !isAuthPage && pathname !== '/') {
       router.replace('/login');
     }
     // If already authenticated and visiting login/register, redirect to dashboard
-    if (authenticated && AUTH_PAGES.includes(pathname)) {
+    if (authenticated && isAuthPage) {
       router.replace('/dashboard');
     }
-  }, [pathname, router]);
+  }, [pathname, isAuthPage, router]);
 
   // Listen for auth state changes (login/logout events)
   useEffect(() => {
     const handleAuthChange = () => {
       const authenticated = readAuthFromStorage();
       setIsAuthenticated(authenticated);
-      if (!authenticated && !AUTH_PAGES.includes(pathname)) {
+      if (!authenticated && !isAuthPage && pathname !== '/') {
         window.location.href = '/login';
       }
     };
@@ -82,14 +81,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       window.removeEventListener('auth-change', handleAuthChange);
       window.removeEventListener('storage', handleAuthChange);
     };
-  }, [pathname, router]);
+  }, [pathname, isAuthPage]);
 
-  // Show loader until we've checked auth
-  if (!authChecked) {
-    return <MahavitaranPageLoader message="Initializing Mahavitaran Field Portal..." fullScreen={true} />;
-  }
-
-  // Render auth pages (login/register) without sidebar
+  // Render auth pages (login/register) INSTANTLY without any blocking loader
   if (isAuthPage) {
     return (
       <div className="h-[100dvh] h-screen w-screen overflow-hidden bg-slate-50 text-slate-900 flex flex-col font-sans">
@@ -101,12 +95,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // If not authenticated and on a protected page, show redirecting loader
-  if (!isAuthenticated) {
+  // If client confirms unauthenticated on a protected page, show redirecting state
+  if (authChecked && !isAuthenticated) {
     return <MahavitaranPageLoader message="Authentication required. Redirecting to Login..." fullScreen={true} />;
   }
 
-  // Map page layout
+  // Map page layout (streamlined full-bleed without blocking splash)
   if (isMapPage) {
     return (
       <div className="h-[100dvh] h-screen w-screen overflow-hidden bg-slate-50 text-slate-900 flex flex-col font-sans">
@@ -121,7 +115,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Standard layout with navbar + sidebar
+  // Standard layout with navbar + sidebar (renders instantly with page-level skeleton states)
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
       <Navbar />

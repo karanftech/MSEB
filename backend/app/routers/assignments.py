@@ -1,7 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from datetime import datetime
-from app.database import get_database
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from datetime import datetime, timezone
+
+from app.database import get_db
+from app.models.officer import Officer
+from app.models.customer import Customer
+from app.models.meter import Meter
+from app.models.audit import Assignment
 from app.schemas.officer import CustomerAssignmentRequest, MeterAssignmentRequest
 from app.utils.dependencies import get_current_user
 
@@ -10,97 +16,117 @@ router = APIRouter(prefix="/api/assignments", tags=["Assignments"])
 @router.post("")
 async def assign_customers(
     request: CustomerAssignmentRequest,
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    officer = await db.officers.find_one({"officer_id": request.officer_id})
+    stmt = select(Officer).where(Officer.officer_id == request.officer_id)
+    officer = (await db.execute(stmt)).scalar_one_or_none()
     if not officer:
         raise HTTPException(status_code=404, detail="Officer not found")
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    # Update assigned officer ID on customers
-    result = await db.customers.update_many(
-        {"customer_id": {"$in": request.customer_ids}},
-        {"$set": {"assigned_officer_id": request.officer_id, "updated_at": now_str}}
+    # Update assigned officer on Customers
+    cus_upd = (
+        update(Customer)
+        .where(Customer.customer_id.in_(request.customer_ids))
+        .values(
+            assigned_officer_id=request.officer_id,
+            assigned_officer_name=officer.full_name,
+            updated_at=now_str
+        )
     )
+    res = await db.execute(cus_upd)
+    modified_count = res.rowcount or 0
 
-    # Sync assigned officer ID on associated meters
-    await db.meters.update_many(
-        {"customer_id": {"$in": request.customer_ids}},
-        {"$set": {"assigned_officer_id": request.officer_id, "updated_at": now_str}}
+    # Sync assigned officer on associated Meters
+    mtr_upd = (
+        update(Meter)
+        .where(Meter.customer_id.in_(request.customer_ids))
+        .values(
+            assigned_officer_id=request.officer_id,
+            assigned_officer_name=officer.full_name,
+            updated_at=now_str
+        )
     )
-
-    # Update assigned officer ID on associated pending bills
-    await db.bills.update_many(
-        {"customer_id": {"$in": request.customer_ids}},
-        {"$set": {"assigned_officer_id": request.officer_id, "updated_at": now_str}}
-    )
+    await db.execute(mtr_upd)
 
     # Record assignment event
-    await db.assignments.insert_one({
-        "officer_id": request.officer_id,
-        "customer_ids": request.customer_ids,
-        "type": "customer",
-        "assigned_by": str(current_user["_id"]),
-        "created_at": now_str
-    })
+    assignment = Assignment(
+        officer_id=request.officer_id,
+        target_ids=request.customer_ids,
+        type="customer",
+        assigned_by=str(current_user["_id"]),
+        created_at=now_str
+    )
+    db.add(assignment)
+    await db.commit()
 
     return {
-        "message": f"Successfully assigned {result.modified_count} customers (and associated meters) to officer '{officer.get('full_name')}'",
+        "message": f"Successfully assigned {modified_count} customers (and associated meters) to officer '{officer.full_name}'",
         "officer_id": request.officer_id,
-        "count": result.modified_count
+        "count": modified_count
     }
-
 
 @router.post("/meters")
 async def assign_meters(
     request: MeterAssignmentRequest,
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    officer = await db.officers.find_one({"officer_id": request.officer_id})
+    stmt = select(Officer).where(Officer.officer_id == request.officer_id)
+    officer = (await db.execute(stmt)).scalar_one_or_none()
     if not officer:
         raise HTTPException(status_code=404, detail="Officer not found")
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    # Update assigned officer ID on specific meters
-    result = await db.meters.update_many(
-        {"$or": [{"meter_id": {"$in": request.meter_ids}}, {"meter_number": {"$in": request.meter_ids}}]},
-        {"$set": {"assigned_officer_id": request.officer_id, "updated_at": now_str}}
+    # Update assigned officer on Meters
+    mtr_upd = (
+        update(Meter)
+        .where(
+            (Meter.meter_id.in_(request.meter_ids)) | (Meter.meter_number.in_(request.meter_ids))
+        )
+        .values(
+            assigned_officer_id=request.officer_id,
+            assigned_officer_name=officer.full_name,
+            updated_at=now_str
+        )
     )
+    res = await db.execute(mtr_upd)
+    modified_count = res.rowcount or 0
 
-    # Find affected customer IDs from assigned meters
-    meters = await db.meters.find(
-        {"$or": [{"meter_id": {"$in": request.meter_ids}}, {"meter_number": {"$in": request.meter_ids}}]}
-    ).to_list(1000)
-    customer_ids = list(set([m.get("customer_id") for m in meters if m.get("customer_id")]))
+    # Find affected customer IDs
+    m_stmt = select(Meter.customer_id).where(
+        (Meter.meter_id.in_(request.meter_ids)) | (Meter.meter_number.in_(request.meter_ids))
+    )
+    customer_ids = list(set((await db.execute(m_stmt)).scalars().all()))
 
     if customer_ids:
-        # Sync assigned officer ID on customers and bills
-        await db.customers.update_many(
-            {"customer_id": {"$in": customer_ids}},
-            {"$set": {"assigned_officer_id": request.officer_id, "updated_at": now_str}}
+        cus_upd = (
+            update(Customer)
+            .where(Customer.customer_id.in_(customer_ids))
+            .values(
+                assigned_officer_id=request.officer_id,
+                assigned_officer_name=officer.full_name,
+                updated_at=now_str
+            )
         )
-        await db.bills.update_many(
-            {"customer_id": {"$in": customer_ids}},
-            {"$set": {"assigned_officer_id": request.officer_id, "updated_at": now_str}}
-        )
+        await db.execute(cus_upd)
 
     # Record assignment event
-    await db.assignments.insert_one({
-        "officer_id": request.officer_id,
-        "meter_ids": request.meter_ids,
-        "customer_ids": customer_ids,
-        "type": "meter",
-        "assigned_by": str(current_user["_id"]),
-        "created_at": now_str
-    })
+    assignment = Assignment(
+        officer_id=request.officer_id,
+        target_ids=request.meter_ids,
+        type="meter",
+        assigned_by=str(current_user["_id"]),
+        created_at=now_str
+    )
+    db.add(assignment)
+    await db.commit()
 
     return {
-        "message": f"Successfully assigned {result.modified_count} meters to officer '{officer.get('full_name')}'",
+        "message": f"Successfully assigned {modified_count} meters to officer '{officer.full_name}'",
         "officer_id": request.officer_id,
-        "count": result.modified_count
+        "count": modified_count
     }
-

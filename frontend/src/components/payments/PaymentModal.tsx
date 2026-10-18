@@ -146,6 +146,7 @@ export default function PaymentModal({
 
       setIsSubmitting(false);
       setIsConfirmOpen(false);
+      window.dispatchEvent(new Event('customers-updated'));
       onSuccess(result);
     } catch (err: any) {
       setIsSubmitting(false);

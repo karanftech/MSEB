@@ -34,9 +34,79 @@ export function decodePolyline(encoded: string): Coordinates[] {
   return points;
 }
 
+/**
+ * Direct client-side OSRM API v1 driving router.
+ * Used when backend routing proxy is unreachable or client fallback is required.
+ */
+export async function fetchOSRMRoute(
+  origin: Coordinates,
+  destination: Coordinates
+): Promise<RouteCalculationResult> {
+  const url = `https://router.project-osrm.org/route/v1/driving/${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}?overview=full&geometries=geojson&steps=true`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`OSRM API responded with status ${res.status}`);
+  }
+  const data = await res.json();
+  if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+    throw new Error('OSRM returned no driving route');
+  }
+
+  const route0 = data.routes[0];
+  const geoCoords = route0.geometry?.coordinates || [];
+  const coordsPath: Coordinates[] = geoCoords.map((pt: [number, number]) => ({
+    latitude: pt[1],
+    longitude: pt[0],
+  }));
+
+  const distM = Number(route0.distance || 0);
+  const durS = Number(route0.duration || 0);
+
+  const steps = (route0.legs?.[0]?.steps || []).map((step: any) => {
+    const maneuver = step.maneuver || {};
+    const mType = maneuver.type || '';
+    const modifier = maneuver.modifier || '';
+    const name = step.name || '';
+    let instruction = `${mType} ${modifier}`.trim();
+    if (name) instruction += ` onto ${name}`;
+    if (!instruction || instruction.toLowerCase() === 'depart') {
+      instruction = `Head along ${name || 'street'} towards meter`;
+    }
+
+    const sDist = step.distance || 0;
+    const sDur = step.duration || 0;
+    return {
+      instruction: instruction.charAt(0).toUpperCase() + instruction.slice(1),
+      distance_text: sDist >= 1000 ? `${(sDist / 1000).toFixed(1)} km` : `${Math.round(sDist)} m`,
+      duration_text: sDur >= 60 ? `${Math.round(sDur / 60)} min` : `${Math.round(sDur)} sec`,
+    };
+  });
+
+  const distText = distM >= 1000 ? `${(distM / 1000).toFixed(2)} km` : `${Math.round(distM)} m`;
+  const durText = durS >= 60 ? `${Math.round(durS / 60)} min` : '< 1 min';
+
+  return {
+    distance_meters: Math.round(distM),
+    distance_text: distText,
+    duration_seconds: Math.round(durS),
+    duration_text: durText,
+    start_address: `Officer Location (${origin.latitude.toFixed(4)}, ${origin.longitude.toFixed(4)})`,
+    end_address: `Meter Location (${destination.latitude.toFixed(4)}, ${destination.longitude.toFixed(4)})`,
+    encoded_polyline: '',
+    coordinates_path: coordsPath.length >= 2 ? coordsPath : [origin, destination],
+    steps: steps.length > 0 ? steps : [
+      {
+        instruction: 'Proceed along route towards electricity meter',
+        distance_text: distText,
+        duration_text: durText,
+      },
+    ],
+  };
+}
+
 export const routeService = {
   clearRouteCache() {
-    // No-op: Caching disabled for real-time live route processing
+    // No-op
   },
 
   async calculateRoute(
@@ -61,8 +131,13 @@ export const routeService = {
       }
       return data;
     } catch (err) {
-      console.warn('Backend calculate route API offline, using client fallback:', err);
-      return this.calculateClientRoute(origin, destination);
+      console.warn('Backend calculate route API offline, using direct OSRM API v1:', err);
+      try {
+        return await fetchOSRMRoute(origin, destination);
+      } catch (osrmErr) {
+        console.warn('Direct OSRM route fallback:', osrmErr);
+        return this.calculateClientRoute(origin, destination);
+      }
     }
   },
 
@@ -109,12 +184,10 @@ export const routeService = {
     };
   },
 
-
   async calculateMultiRoute(
     origin: Coordinates,
     customers: Customer[]
   ): Promise<MultiRouteCalculationResult> {
-    // Strictly filter out collected payment meters — only route pending meters
     const pendingCustomers = customers.filter(
       (c) => c.status !== 'paid' && (c.pending_amount === undefined || c.pending_amount > 0)
     );
@@ -146,16 +219,16 @@ export const routeService = {
       });
       return response.data;
     } catch (err) {
-      console.warn('Backend calculate-multi endpoint offline, performing client-side TSP optimization:', err);
+      console.warn('Backend calculate-multi offline, performing client-side TSP + OSRM routing:', err);
       return this.calculateClientMultiRoute(origin, pendingCustomers);
     }
   },
 
-  // Client-side fallback TSP nearest-neighbor algorithm
-  calculateClientMultiRoute(
+  // Client-side TSP nearest-neighbor algorithm with OSRM legs
+  async calculateClientMultiRoute(
     origin: Coordinates,
     customers: Customer[]
-  ): MultiRouteCalculationResult {
+  ): Promise<MultiRouteCalculationResult> {
     if (customers.length === 0) {
       return {
         total_distance_meters: 0,
@@ -202,14 +275,47 @@ export const routeService = {
     let prevLat = origin.latitude;
     let prevLng = origin.longitude;
 
-    const stops = orderedCustomers.map((cust, idx) => {
-      const legDist = calculateHaversineDistance(prevLat, prevLng, cust.latitude, cust.longitude) * 1.35;
-      const legDur = legDist / 6.94;
+    const stops = [];
+    for (let idx = 0; idx < orderedCustomers.length; idx++) {
+      const cust = orderedCustomers[idx];
+      let legDist = 0;
+      let legDur = 0;
+      let legCoords: Coordinates[] = [];
+
+      try {
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${prevLng},${prevLat};${cust.longitude},${cust.latitude}?overview=full&geometries=geojson`;
+        const res = await fetch(osrmUrl);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+            const r = data.routes[0];
+            legDist = r.distance || 0;
+            legDur = r.duration || 0;
+            const geo = r.geometry?.coordinates || [];
+            legCoords = geo.map((pt: [number, number]) => ({ latitude: pt[1], longitude: pt[0] }));
+          }
+        }
+      } catch (e) {
+        // Fallback
+      }
+
+      if (!legCoords || legCoords.length < 2) {
+        legDist = calculateHaversineDistance(prevLat, prevLng, cust.latitude, cust.longitude) * 1.35;
+        legDur = legDist / 6.94;
+        legCoords = [
+          { latitude: prevLat, longitude: prevLng },
+          { latitude: cust.latitude, longitude: cust.longitude },
+        ];
+      }
 
       totalDist += legDist;
       totalDur += legDur;
 
-      path.push({ latitude: cust.latitude, longitude: cust.longitude });
+      for (const pt of legCoords) {
+        if (!path.length || path[path.length - 1].latitude !== pt.latitude || path[path.length - 1].longitude !== pt.longitude) {
+          path.push(pt);
+        }
+      }
 
       prevLat = cust.latitude;
       prevLng = cust.longitude;
@@ -217,7 +323,7 @@ export const routeService = {
       const legDistText = legDist >= 1000 ? `${(legDist / 1000).toFixed(2)} km` : `${Math.round(legDist)} m`;
       const legDurText = legDur >= 60 ? `${Math.round(legDur / 60)} min` : '< 1 min';
 
-      return {
+      stops.push({
         sequence: idx + 1,
         customer_id: cust.customer_id,
         name: cust.name,
@@ -229,8 +335,8 @@ export const routeService = {
         distance_from_prev_meters: Math.round(legDist),
         distance_from_prev_text: legDistText,
         duration_from_prev_text: legDurText,
-      };
-    });
+      });
+    }
 
     const totalDistText = totalDist >= 1000 ? `${(totalDist / 1000).toFixed(2)} km` : `${Math.round(totalDist)} m`;
     const totalDurText = totalDur >= 60 ? `${Math.round(totalDur / 60)} min` : '< 1 min';
@@ -245,4 +351,3 @@ export const routeService = {
     };
   },
 };
-

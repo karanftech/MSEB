@@ -6,18 +6,25 @@ from contextlib import asynccontextmanager
 import logging
 
 from app.config import settings
-from app.database import connect_to_mongo, close_mongo_connection
+from app.database import init_db, close_db
+from app.services.cache_service import cache_service
 from app.routers import auth, customers, payments, routes, officers, assignments, dashboard, reports
 
 logger = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing Electricity Bill Collection System Backend...")
-    await connect_to_mongo()
+    logger.info("Initializing Electricity Bill Collection System Backend with PostgreSQL 18 & PostGIS 3.6...")
+    await init_db()
+    await cache_service._get_redis()
     yield
     logger.info("Shutting down backend...")
-    await close_mongo_connection()
+    if cache_service.redis_client:
+        try:
+            await cache_service.redis_client.aclose()
+        except Exception:
+            pass
+    await close_db()
 
 app = FastAPI(
     title="Electricity Bill Collection & Navigation System API",

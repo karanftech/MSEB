@@ -1,14 +1,16 @@
 import asyncio
-from app.database import connect_db, get_database
+from sqlalchemy import select
+from app.database import AsyncSessionLocal, init_db
+from app.models.customer import Customer
 
 async def main():
-    await connect_db()
-    db = get_database()
-    customers = await db['customers'].find({}).to_list(100)
-    print(f'Total customers: {len(customers)}')
-    for c in customers:
-        meters = c.get('meters', [])
-        dtc = c.get('dtc_code') or (meters[0].get('dtc_code') if meters else None)
-        print(f"{c.get('customer_id')}: name={c.get('name')}, dtc={dtc}, lat={c.get('latitude')}, lng={c.get('longitude')}, status={c.get('status')}")
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Customer).limit(100))
+        customers = result.scalars().all()
+        print(f"Total customers in PostgreSQL: {len(customers)}")
+        for c in customers:
+            print(f"{c.customer_id}: name={c.name}, dtc={c.dtc_code}, lat={c.latitude}, lng={c.longitude}, status={c.status}")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

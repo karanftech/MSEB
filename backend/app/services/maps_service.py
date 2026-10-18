@@ -97,54 +97,85 @@ class MapsService:
         dest_lat: float, dest_lng: float
     ) -> RouteCalculationResponse:
         """
-        Calculate route using Google Routes API if valid key available,
-        else use OSRM (Open Source Routing Machine) for exact real-road street geometry & turn steps.
+        Calculate route using OSRM (Open Source Routing Machine)
+        for exact real-road street geometry & turn steps.
         """
-        # 1. Try Google Routes API if valid key provided
-        if settings.GOOGLE_MAPS_API_KEY and settings.GOOGLE_MAPS_API_KEY not in ("YOUR_GOOGLE_MAPS_API_KEY_HERE", "AIzaSyBmEXi6-U51MCj8NO_6lKrptP9IYSH39Is"):
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    url = "https://routes.googleapis.com/directions/v2:computeRoutes"
-                    headers = {
-                        "Content-Type": "application/json",
-                        "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
-                        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs"
-                    }
-                    payload = {
-                        "origin": {"location": {"latLng": {"latitude": origin_lat, "longitude": origin_lng}}},
-                        "destination": {"location": {"latLng": {"latitude": dest_lat, "longitude": dest_lng}}},
-                        "travelMode": "DRIVE",
-                        "routingPreference": "TRAFFIC_AWARE"
-                    }
-                    response = await client.post(url, json=payload, headers=headers)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "routes" in data and len(data["routes"]) > 0:
-                            route = data["routes"][0]
-                            dist = route.get("distanceMeters", 0)
-                            dur_str = route.get("duration", "0s").replace("s", "")
-                            dur_sec = float(dur_str) if dur_str else 0.0
-                            polyline = route.get("polyline", {}).get("encodedPolyline", "")
-                            decoded_coords = decode_polyline(polyline)
+        # 1. Primary Routing Engine: OSRM (Open Source Routing Machine) API v1
+        try:
+            base_url = settings.OSRM_BASE_URL.rstrip('/')
+            osrm_url = f"{base_url}/route/v1/driving/{origin_lng},{origin_lat};{dest_lng},{dest_lat}?overview=full&geometries=geojson&steps=true"
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get(osrm_url)
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("code") == "Ok" and data.get("routes"):
+                        osrm_route = data["routes"][0]
+                        dist_m = float(osrm_route.get("distance", 0))
+                        dur_s = float(osrm_route.get("duration", 0))
 
-                            return RouteCalculationResponse(
-                                distance_meters=float(dist),
-                                distance_text=f"{dist / 1000.0:.1f} km" if dist >= 1000 else f"{int(dist)} m",
-                                duration_seconds=dur_sec,
-                                duration_text=f"{int(dur_sec // 60)} min" if dur_sec >= 60 else f"{int(dur_sec)} sec",
-                                start_address=f"Officer Location ({origin_lat:.4f}, {origin_lng:.4f})",
-                                end_address=f"Meter Location ({dest_lat:.4f}, {dest_lng:.4f})",
-                                encoded_polyline=polyline,
-                                coordinates_path=decoded_coords if decoded_coords else [
-                                    Coordinates(latitude=origin_lat, longitude=origin_lng),
-                                    Coordinates(latitude=dest_lat, longitude=dest_lng)
-                                ],
-                                steps=[]
-                            )
-            except Exception as e:
-                logger.warning(f"Google Routes API call failed, using OSRM fallback: {e}")
+                        # Extract real street coordinates from GeoJSON
+                        geo_coords = osrm_route.get("geometry", {}).get("coordinates", [])
+                        coords_path = [
+                            Coordinates(latitude=pt[1], longitude=pt[0])
+                            for pt in geo_coords
+                        ]
 
-        # 2. Try OSRM (Open Source Routing Machine) for exact real-road street geometry & turn steps
+                        # Extract turn-by-turn steps
+                        steps: List[RouteStep] = []
+                        legs = osrm_route.get("legs", [])
+                        if legs:
+                            for step in legs[0].get("steps", []):
+                                name = step.get("name", "")
+                                maneuver = step.get("maneuver", {})
+                                m_type = maneuver.get("type", "")
+                                modifier = maneuver.get("modifier", "")
+
+                                instruction = f"{m_type.capitalize()} {modifier}".strip()
+                                if name:
+                                    instruction += f" onto {name}"
+                                if not instruction or instruction == "Depart":
+                                    instruction = f"Head along {name if name else 'street'} towards meter"
+
+                                s_dist = step.get("distance", 0)
+                                s_dur = step.get("duration", 0)
+
+                                steps.append(RouteStep(
+                                    instruction=instruction,
+                                    distance_text=f"{s_dist / 1000.0:.1f} km" if s_dist >= 1000 else f"{int(s_dist)} m",
+                                    duration_text=f"{int(s_dur // 60)} min" if s_dur >= 60 else f"{int(s_dur)} sec",
+                                    start_location=Coordinates(latitude=origin_lat, longitude=origin_lng),
+                                    end_location=Coordinates(latitude=dest_lat, longitude=dest_lng)
+                                ))
+
+                        dist_formatted = f"{dist_m / 1000.0:.2f} km" if dist_m >= 1000 else f"{int(dist_m)} m"
+                        dur_formatted = f"{int(dur_s // 60)} min" if dur_s >= 60 else "< 1 min"
+
+                        return RouteCalculationResponse(
+                            distance_meters=round(dist_m, 1),
+                            distance_text=dist_formatted,
+                            duration_seconds=round(dur_s, 1),
+                            duration_text=dur_formatted,
+                            start_address=f"Officer Location ({origin_lat:.4f}, {origin_lng:.4f})",
+                            end_address=f"Meter Location ({dest_lat:.4f}, {dest_lng:.4f})",
+                            encoded_polyline="",
+                            coordinates_path=coords_path if coords_path else [
+                                Coordinates(latitude=origin_lat, longitude=origin_lng),
+                                Coordinates(latitude=dest_lat, longitude=dest_lng)
+                            ],
+                            steps=steps if steps else [
+                                RouteStep(
+                                    instruction="Proceed along main road to electricity meter",
+                                    distance_text=dist_formatted,
+                                    duration_text=dur_formatted,
+                                    start_location=Coordinates(latitude=origin_lat, longitude=origin_lng),
+                                    end_location=Coordinates(latitude=dest_lat, longitude=dest_lng)
+                                )
+                            ]
+                        )
+        except Exception as e:
+            logger.warning(f"OSRM API v1 driving router call failed: {e}")
+
+        # 2. Secondary Fallback: Public OSRM routing endpoint
         try:
             osrm_url = f"https://router.project-osrm.org/route/v1/driving/{origin_lng},{origin_lat};{dest_lng},{dest_lat}?overview=full&geometries=geojson&steps=true"
             async with httpx.AsyncClient(timeout=8.0) as client:

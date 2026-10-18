@@ -77,6 +77,12 @@ export default function OfficerDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coordKey, geoLoading]);
 
+  useEffect(() => {
+    const handleUpdate = () => fetchDashboard(false, coords);
+    window.addEventListener('customers-updated', handleUpdate);
+    return () => window.removeEventListener('customers-updated', handleUpdate);
+  }, [coords]);
+
   if (loading) {
     return (
       <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto animate-pulse">

@@ -1,11 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_, and_, func, delete
 from typing import List, Optional, Dict, Any
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.database import get_database
+from app.database import get_db, point_wkt
+from app.models.customer import Customer
+from app.models.meter import Meter
+from app.models.officer import Officer
 from app.schemas.customer import (
     CustomerCreate,
     CustomerUpdate,
@@ -17,8 +21,8 @@ from app.schemas.customer import (
 )
 from app.services.customer_service import CustomerService
 from app.services.customer_import_service import CustomerImportService
+from app.services.cache_service import cache_service
 from app.utils.dependencies import get_current_user
-
 
 router = APIRouter(prefix="/api/customers", tags=["Customers"])
 
@@ -28,14 +32,15 @@ async def get_nearby_customers(
     longitude: float = Query(..., description="Current longitude of officer"),
     radius: float = Query(5000.0, description="Search radius in meters"),
     status: Optional[str] = Query(None, description="Status filter (pending, overdue, paid)"),
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
     officer_id = None
     if current_user.get("role") == "field_officer":
-        officer = await db.officers.find_one({"user_id": current_user["_id"]})
+        res = await db.execute(select(Officer).where(Officer.user_id == current_user["_id"]))
+        officer = res.scalar_one_or_none()
         if officer:
-            officer_id = officer.get("officer_id")
+            officer_id = officer.officer_id
 
     return await CustomerService.get_nearby_customers(
         db=db,
@@ -49,57 +54,62 @@ async def get_nearby_customers(
 @router.get("/dtc-codes", response_model=DTCCodesResponse)
 async def get_dtc_codes(
     all_officers: Optional[bool] = Query(False),
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
     """Get dynamic distinct DTC codes and meter counts for the authenticated field officer."""
-    match_query: Dict[str, Any] = {
-        "dtc_code": {"$exists": True, "$ne": None, "$nin": ["", "null", "NaN"]}
-    }
+    user_id_str = str(current_user["_id"])
+    cache_key = f"dtc_codes:{user_id_str}:{all_officers}"
+
+    cached = await cache_service.get(cache_key)
+    if cached:
+        return DTCCodesResponse(**cached)
+
+    stmt = select(
+        Customer.dtc_code,
+        func.count(Customer.id).label("meter_count")
+    ).where(
+        Customer.dtc_code.isnot(None),
+        Customer.dtc_code != "",
+        Customer.dtc_code != "null",
+        Customer.dtc_code != "NaN"
+    )
 
     if not all_officers:
-        user_id_str = str(current_user["_id"])
-        officer_doc = await db.officers.find_one({
-            "$or": [
-                {"user_id": current_user["_id"]},
-                {"user_id": user_id_str},
-                {"email": current_user.get("email")}
-            ]
-        })
+        res = await db.execute(select(Officer).where(
+            or_(
+                Officer.user_id == user_id_str,
+                Officer.email == current_user.get("email")
+            )
+        ))
+        officer_doc = res.scalar_one_or_none()
         if officer_doc:
-            off_id = officer_doc.get("officer_id")
-            match_query["$or"] = [
-                {"assigned_officer_id": off_id},
-                {"uploaded_by_officer_id": off_id},
-                {"assigned_officer_id": user_id_str},
-                {"uploaded_by_officer_id": user_id_str}
-            ]
+            off_id = officer_doc.officer_id
+            stmt = stmt.where(
+                or_(
+                    Customer.assigned_officer_id == off_id,
+                    Customer.uploaded_by_officer_id == off_id,
+                    Customer.assigned_officer_id == user_id_str,
+                    Customer.uploaded_by_officer_id == user_id_str
+                )
+            )
 
-    pipeline = [
-        {"$match": match_query},
-        {
-            "$group": {
-                "_id": "$dtc_code",
-                "meter_count": {"$sum": 1}
-            }
-        },
-        {"$sort": {"_id": 1}}
-    ]
-
-    results = await db.customers.aggregate(pipeline).to_list(1000)
+    stmt = stmt.group_by(Customer.dtc_code).order_by(Customer.dtc_code)
+    results = (await db.execute(stmt)).all()
 
     dtc_options = [
-        DTCCodeOption(code=str(item["_id"]), meter_count=int(item["meter_count"]))
-        for item in results if item.get("_id")
+        DTCCodeOption(code=str(code), meter_count=int(cnt))
+        for code, cnt in results if code
     ]
-
     total_meters = sum(opt.meter_count for opt in dtc_options)
 
-    return DTCCodesResponse(
+    response_data = DTCCodesResponse(
         total_dtcs=len(dtc_options),
         total_meters=total_meters,
         dtcs=dtc_options
     )
+    await cache_service.set(cache_key, response_data.model_dump(), ttl=120)
+    return response_data
 
 @router.get("", response_model=List[CustomerResponse])
 async def list_customers(
@@ -114,135 +124,122 @@ async def list_customers(
     search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(1000, ge=1, le=1000),
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    query: Dict[str, Any] = {}
+    user_id_str = str(current_user["_id"])
+    cache_key = (
+        f"customers:list:{user_id_str}:{all_officers}:{assigned_officer_id or ''}:"
+        f"{area or ''}:{dtc_code or ''}:{status or ''}:{disconnection_status or ''}:"
+        f"{min_amount or ''}:{max_amount or ''}:{search or ''}:{skip}:{limit}"
+    )
+
+    cached_list = await cache_service.get(cache_key)
+    if cached_list is not None:
+        return [CustomerResponse(**item) for item in cached_list]
+
+    conditions = []
 
     if assigned_officer_id:
-        query["$or"] = [
-            {"assigned_officer_id": assigned_officer_id},
-            {"uploaded_by_officer_id": assigned_officer_id}
-        ]
+        conditions.append(
+            or_(
+                Customer.assigned_officer_id == assigned_officer_id,
+                Customer.uploaded_by_officer_id == assigned_officer_id
+            )
+        )
     elif not all_officers:
         user_id_str = str(current_user["_id"])
-        officer_doc = await db.officers.find_one({
-            "$or": [
-                {"user_id": current_user["_id"]},
-                {"user_id": user_id_str},
-                {"email": current_user.get("email")}
-            ]
-        })
+        res = await db.execute(select(Officer).where(
+            or_(
+                Officer.user_id == user_id_str,
+                Officer.email == current_user.get("email")
+            )
+        ))
+        officer_doc = res.scalar_one_or_none()
         if officer_doc:
-            off_id = officer_doc.get("officer_id")
-            query["$or"] = [
-                {"assigned_officer_id": off_id},
-                {"uploaded_by_officer_id": off_id},
-                {"assigned_officer_id": user_id_str},
-                {"uploaded_by_officer_id": user_id_str}
-            ]
-
-    if dtc_code and dtc_code.lower() != 'all':
-        query["dtc_code"] = dtc_code
-
-    if area:
-        query["area"] = area
-
-    if status:
-        query["status"] = status
-
-    if disconnection_status and disconnection_status.lower() != 'all':
-        ds = disconnection_status.upper()
-        query["$or"] = [
-            {"disconnection_status": ds},
-            {"disconnection_status": ds.lower()},
-            {"status": ds},
-            {"status": ds.lower()}
-        ]
-
-    if min_amount is not None or max_amount is not None:
-        amt_query = {}
-        if min_amount is not None:
-            amt_query["$gte"] = min_amount
-        if max_amount is not None:
-            amt_query["$lte"] = max_amount
-        query["pending_amount"] = amt_query
-
-    if search:
-        search_or = [
-            {"name": {"$regex": search, "$options": "i"}},
-            {"customer_id": {"$regex": search, "$options": "i"}},
-            {"meter_number": {"$regex": search, "$options": "i"}},
-            {"address": {"$regex": search, "$options": "i"}},
-            {"phone": {"$regex": search, "$options": "i"}}
-        ]
-        if "$or" in query:
-            query["$and"] = [{"$or": query.pop("$or")}, {"$or": search_or}]
-        else:
-            query["$or"] = search_or
-
-    customers_docs = await db.customers.find(query).skip(skip).limit(limit).to_list(limit)
-
-    if not customers_docs:
-        return []
-
-    # Batch fetch meters with projection
-    customer_ids = [cus.get("customer_id") for cus in customers_docs if cus.get("customer_id")]
-    all_meters_docs = await db.meters.find(
-        {"customer_id": {"$in": customer_ids}},
-        {"meter_id": 1, "meter_number": 1, "customer_id": 1, "latitude": 1, "longitude": 1, "assigned_officer_id": 1, "uploaded_by_officer_id": 1}
-    ).to_list(5000)
-
-    # Collect all officer IDs (from customers AND meters)
-    all_officer_ids = set()
-    for cus in customers_docs:
-        if cus.get("assigned_officer_id"):
-            all_officer_ids.add(cus.get("assigned_officer_id"))
-        if cus.get("uploaded_by_officer_id"):
-            all_officer_ids.add(cus.get("uploaded_by_officer_id"))
-    for m in all_meters_docs:
-        if m.get("assigned_officer_id"):
-            all_officer_ids.add(m.get("assigned_officer_id"))
-        if m.get("uploaded_by_officer_id"):
-            all_officer_ids.add(m.get("uploaded_by_officer_id"))
-
-    officer_names_map = {}
-    if all_officer_ids:
-        officers_docs = await db.officers.find(
-            {"officer_id": {"$in": list(all_officer_ids)}},
-            {"officer_id": 1, "full_name": 1}
-        ).to_list(1000)
-        officer_names_map = {o.get("officer_id"): o.get("full_name") for o in officers_docs if o.get("officer_id")}
-
-    meters_by_customer = defaultdict(list)
-    for m in all_meters_docs:
-        cid = m.get("customer_id")
-        m_off_id = m.get("assigned_officer_id")
-        if cid:
-            meters_by_customer[cid].append(
-                MeterSchema(
-                    meter_id=m.get("meter_id", ""),
-                    meter_number=m.get("meter_number", ""),
-                    customer_id=m.get("customer_id", ""),
-                    latitude=float(m.get("latitude", 0.0)),
-                    longitude=float(m.get("longitude", 0.0)),
-                    dtc_code=m.get("dtc_code"),
-                    assigned_officer_id=m_off_id,
-                    assigned_officer_name=officer_names_map.get(m_off_id) if m_off_id else None,
-                    uploaded_by_officer_id=m.get("uploaded_by_officer_id")
+            off_id = officer_doc.officer_id
+            conditions.append(
+                or_(
+                    Customer.assigned_officer_id == off_id,
+                    Customer.uploaded_by_officer_id == off_id,
+                    Customer.assigned_officer_id == user_id_str,
+                    Customer.uploaded_by_officer_id == user_id_str
                 )
             )
 
+    if dtc_code and dtc_code.lower() != 'all':
+        conditions.append(Customer.dtc_code == dtc_code)
+
+    if area:
+        conditions.append(Customer.area == area)
+
+    if status:
+        conditions.append(Customer.status == status)
+
+    if disconnection_status and disconnection_status.lower() != 'all':
+        ds = disconnection_status.upper()
+        conditions.append(
+            or_(
+                Customer.disconnection_status == ds,
+                Customer.disconnection_status == ds.lower(),
+                Customer.status == ds,
+                Customer.status == ds.lower()
+            )
+        )
+
+    if min_amount is not None:
+        conditions.append(Customer.pending_amount >= min_amount)
+    if max_amount is not None:
+        conditions.append(Customer.pending_amount <= max_amount)
+
+    if search:
+        search_pattern = f"%{search}%"
+        conditions.append(
+            or_(
+                Customer.name.ilike(search_pattern),
+                Customer.customer_id.ilike(search_pattern),
+                Customer.meter_number.ilike(search_pattern),
+                Customer.address.ilike(search_pattern),
+                Customer.phone.ilike(search_pattern)
+            )
+        )
+
+    stmt = select(Customer)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    stmt = stmt.offset(skip).limit(limit)
+
+    customers_docs = (await db.execute(stmt)).scalars().all()
+    if not customers_docs:
+        return []
+
+    # Batch fetch meters
+    customer_ids = [c.customer_id for c in customers_docs if c.customer_id]
+    m_stmt = select(Meter).where(Meter.customer_id.in_(customer_ids))
+    all_meters_docs = (await db.execute(m_stmt)).scalars().all()
+
+    meters_by_customer = defaultdict(list)
+    for m in all_meters_docs:
+        meters_by_customer[m.customer_id].append(
+            MeterSchema(
+                meter_id=m.meter_id,
+                meter_number=m.meter_number,
+                customer_id=m.customer_id,
+                latitude=float(m.latitude or 0.0),
+                longitude=float(m.longitude or 0.0),
+                dtc_code=m.dtc_code,
+                assigned_officer_id=m.assigned_officer_id,
+                assigned_officer_name=m.assigned_officer_name,
+                uploaded_by_officer_id=m.uploaded_by_officer_id
+            )
+        )
 
     results = []
     for cus in customers_docs:
-        cid = cus.get("customer_id")
-        meters = meters_by_customer.get(cid, [])
-        officer_name = officer_names_map.get(cus.get("assigned_officer_id"))
-
-        c_lat = float(cus.get("latitude", 0.0))
-        c_lng = float(cus.get("longitude", 0.0))
-        c_dtc = cus.get("dtc_code")
+        meters = meters_by_customer.get(cus.customer_id, [])
+        c_lat = float(cus.latitude or 0.0)
+        c_lng = float(cus.longitude or 0.0)
+        c_dtc = cus.dtc_code
 
         if (c_lat == 0.0 or c_lng == 0.0) and meters:
             for m in meters:
@@ -258,263 +255,304 @@ async def list_customers(
 
         results.append(
             CustomerResponse(
-                id=str(cus["_id"]),
-                customer_id=cid,
-                name=cus.get("name"),
-                meter_number=cus.get("meter_number", ""),
-                phone=cus.get("phone", ""),
-                email=cus.get("email"),
-                address=cus.get("address", ""),
-                area=cus.get("area", ""),
+                id=str(cus.id),
+                customer_id=cus.customer_id,
+                name=cus.name,
+                meter_number=cus.meter_number or "",
+                phone=cus.phone or "",
+                email=cus.email,
+                address=cus.address or "",
+                area=cus.area or "",
                 latitude=c_lat,
                 longitude=c_lng,
                 dtc_code=c_dtc,
-                disconnection_status=cus.get("disconnection_status"),
-                pending_amount=float(cus.get("pending_amount", 0.0)),
-                due_date=cus.get("due_date"),
-                pending_days=cus.get("pending_days") if cus.get("pending_days") is not None else (cus.get("pending days") if cus.get("pending days") is not None else cus.get("days")),
-                status=cus.get("status", "pending"),
-                priority=cus.get("priority", "normal"),
-                assigned_officer_id=cus.get("assigned_officer_id"),
-                assigned_officer_name=officer_name,
-                uploaded_by_officer_id=cus.get("uploaded_by_officer_id"),
+                disconnection_status=cus.disconnection_status,
+                pending_amount=float(cus.pending_amount or 0.0),
+                due_date=cus.due_date,
+                pending_days=cus.pending_days,
+                status=cus.status or "pending",
+                priority=cus.priority or "normal",
+                assigned_officer_id=cus.assigned_officer_id,
+                assigned_officer_name=cus.assigned_officer_name,
+                uploaded_by_officer_id=cus.uploaded_by_officer_id,
                 meters=meters,
-                created_at=str(cus.get("created_at", "")),
-                updated_at=str(cus.get("updated_at", ""))
+                created_at=str(cus.created_at or ""),
+                updated_at=str(cus.updated_at or "")
             )
         )
 
+    await cache_service.set(cache_key, [c.model_dump() for c in results], ttl=60)
     return results
+
+async def invalidate_customer_caches():
+    """Purge cached customer lists, DTC filters, and dashboard metrics on data change."""
+    await cache_service.clear_prefix("customers:")
+    await cache_service.clear_prefix("dashboard:")
+    await cache_service.clear_prefix("dtc_codes:")
 
 @router.post("", response_model=CustomerResponse)
 async def create_customer(
     request: CustomerCreate,
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    existing = await db.customers.find_one({"customer_id": request.customer_id})
+    stmt = select(Customer).where(Customer.customer_id == request.customer_id)
+    existing = (await db.execute(stmt)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail=f"Customer ID '{request.customer_id}' already exists.")
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    location = {
-        "type": "Point",
-        "coordinates": [request.longitude, request.latitude]
-    }
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     assigned_officer_id = request.assigned_officer_id
+    assigned_officer_name = None
     if not assigned_officer_id:
-        off_doc = await db.officers.find_one({
-            "$or": [
-                {"user_id": current_user["_id"]},
-                {"email": current_user.get("email")}
-            ]
-        })
+        res = await db.execute(select(Officer).where(
+            or_(
+                Officer.user_id == current_user["_id"],
+                Officer.email == current_user.get("email")
+            )
+        ))
+        off_doc = res.scalar_one_or_none()
         if off_doc:
-            assigned_officer_id = off_doc.get("officer_id")
+            assigned_officer_id = off_doc.officer_id
+            assigned_officer_name = off_doc.full_name
+    else:
+        res = await db.execute(select(Officer).where(Officer.officer_id == assigned_officer_id))
+        off_doc = res.scalar_one_or_none()
+        if off_doc:
+            assigned_officer_name = off_doc.full_name
 
     if not request.dtc_code or not str(request.dtc_code).strip():
         raise HTTPException(status_code=400, detail="DTC code is required.")
     dtc_code = CustomerImportService.normalize_dtc_code(request.dtc_code)
 
-    customer_doc = {
-        "customer_id": request.customer_id,
-        "name": request.name,
-        "phone": request.phone,
-        "email": request.email,
-        "address": request.address,
-        "area": request.area,
-        "latitude": request.latitude,
-        "longitude": request.longitude,
-        "location": location,
-        "meter_number": request.meter_number,
-        "dtc_code": dtc_code,
-        "pending_amount": float(request.pending_amount) if request.pending_amount is not None else 0.0,
-        "due_date": request.due_date,
-        "pending_days": request.pending_days,
-        "status": request.status or ("overdue" if (request.pending_amount or 0) > 3000 else ("pending" if (request.pending_amount or 0) > 0 else "paid")),
-        "priority": request.priority or ("high" if (request.pending_amount or 0) > 5000 else "normal"),
-        "assigned_officer_id": assigned_officer_id,
-        "uploaded_by_officer_id": request.uploaded_by_officer_id or assigned_officer_id,
-        "created_at": now_str,
-        "updated_at": now_str
-    }
+    status_val = request.status or ("overdue" if (request.pending_amount or 0) > 3000 else ("pending" if (request.pending_amount or 0) > 0 else "paid"))
+    priority_val = request.priority or ("high" if (request.pending_amount or 0) > 5000 else "normal")
 
-    result = await db.customers.insert_one(customer_doc)
-
-    # Create associated primary Meter document
-    meter_id = f"MTR-{uuid4().hex[:6].upper()}"
-    meter_doc = {
-        "meter_id": meter_id,
-        "meter_number": request.meter_number,
-        "customer_id": request.customer_id,
-        "latitude": request.latitude,
-        "longitude": request.longitude,
-        "dtc_code": dtc_code,
-        "assigned_officer_id": assigned_officer_id,
-        "uploaded_by_officer_id": customer_doc["uploaded_by_officer_id"]
-    }
-    await db.meters.insert_one(meter_doc)
-
-    officer_name = None
-    if assigned_officer_id:
-        off_doc = await db.officers.find_one({"officer_id": assigned_officer_id})
-        if off_doc:
-            officer_name = off_doc.get("full_name")
-
-    return CustomerResponse(
-        id=str(result.inserted_id),
+    pt_geom = point_wkt(request.longitude, request.latitude)
+    customer = Customer(
         customer_id=request.customer_id,
         name=request.name,
-        meter_number=request.meter_number,
         phone=request.phone,
         email=request.email,
         address=request.address,
         area=request.area,
         latitude=request.latitude,
         longitude=request.longitude,
+        location=pt_geom,
+        meter_number=request.meter_number,
         dtc_code=dtc_code,
-        disconnection_status=customer_doc.get("disconnection_status"),
-        pending_amount=customer_doc["pending_amount"],
-        due_date=customer_doc["due_date"],
-        pending_days=customer_doc.get("pending_days"),
-        status=customer_doc["status"],
-        priority=customer_doc["priority"],
+        pending_amount=float(request.pending_amount or 0.0),
+        due_date=request.due_date,
+        pending_days=str(request.pending_days) if request.pending_days is not None else None,
+        status=status_val,
+        priority=priority_val,
         assigned_officer_id=assigned_officer_id,
-        assigned_officer_name=officer_name,
-        uploaded_by_officer_id=customer_doc["uploaded_by_officer_id"],
+        assigned_officer_name=assigned_officer_name,
+        uploaded_by_officer_id=request.uploaded_by_officer_id or assigned_officer_id,
+        created_at=now_str,
+        updated_at=now_str
+    )
+    db.add(customer)
+
+    meter_id = f"MTR-{uuid4().hex[:6].upper()}"
+    meter = Meter(
+        meter_id=meter_id,
+        meter_number=request.meter_number,
+        customer_id=request.customer_id,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        location=pt_geom,
+        dtc_code=dtc_code,
+        assigned_officer_id=assigned_officer_id,
+        assigned_officer_name=assigned_officer_name,
+        uploaded_by_officer_id=customer.uploaded_by_officer_id,
+        created_at=now_str,
+        updated_at=now_str
+    )
+    db.add(meter)
+    await db.commit()
+    await db.refresh(customer)
+    await invalidate_customer_caches()
+
+    return CustomerResponse(
+        id=str(customer.id),
+        customer_id=customer.customer_id,
+        name=customer.name,
+        meter_number=customer.meter_number,
+        phone=customer.phone or "",
+        email=customer.email,
+        address=customer.address,
+        area=customer.area,
+        latitude=customer.latitude,
+        longitude=customer.longitude,
+        dtc_code=dtc_code,
+        disconnection_status=customer.disconnection_status,
+        pending_amount=customer.pending_amount,
+        due_date=customer.due_date,
+        pending_days=customer.pending_days,
+        status=customer.status,
+        priority=customer.priority,
+        assigned_officer_id=assigned_officer_id,
+        assigned_officer_name=assigned_officer_name,
+        uploaded_by_officer_id=customer.uploaded_by_officer_id,
         meters=[
             MeterSchema(
-                meter_id=meter_id,
-                meter_number=request.meter_number,
-                customer_id=request.customer_id,
-                latitude=request.latitude,
-                longitude=request.longitude,
+                meter_id=meter.meter_id,
+                meter_number=meter.meter_number,
+                customer_id=meter.customer_id,
+                latitude=meter.latitude,
+                longitude=meter.longitude,
                 dtc_code=dtc_code,
                 assigned_officer_id=assigned_officer_id,
-                assigned_officer_name=officer_name,
-                uploaded_by_officer_id=customer_doc["uploaded_by_officer_id"]
+                assigned_officer_name=assigned_officer_name,
+                uploaded_by_officer_id=customer.uploaded_by_officer_id
             )
         ],
         created_at=now_str,
         updated_at=now_str
     )
 
-
 @router.get("/{customer_id}", response_model=CustomerResponse)
 async def get_customer(
     customer_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    cus = await db.customers.find_one({"customer_id": customer_id})
+    stmt = select(Customer).where(Customer.customer_id == customer_id)
+    cus = (await db.execute(stmt)).scalar_one_or_none()
     if not cus:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    meters_docs = await db.meters.find({"customer_id": customer_id}).to_list(10)
-    
-    # Collect all officer IDs from customer and meters
-    officer_ids = set()
-    if cus.get("assigned_officer_id"):
-        officer_ids.add(cus.get("assigned_officer_id"))
-    for m in meters_docs:
-        if m.get("assigned_officer_id"):
-            officer_ids.add(m.get("assigned_officer_id"))
+    m_stmt = select(Meter).where(Meter.customer_id == customer_id)
+    meters_docs = (await db.execute(m_stmt)).scalars().all()
 
-    officer_names_map = {}
-    if officer_ids:
-        officers = await db.officers.find({"officer_id": {"$in": list(officer_ids)}}).to_list(100)
-        officer_names_map = {o.get("officer_id"): o.get("full_name") for o in officers if o.get("officer_id")}
-
-    meters = []
-    for m in meters_docs:
-        m_off_id = m.get("assigned_officer_id")
-        meters.append(
-            MeterSchema(
-                meter_id=m.get("meter_id", ""),
-                meter_number=m.get("meter_number", ""),
-                customer_id=m.get("customer_id", ""),
-                latitude=float(m.get("latitude", 0.0)),
-                longitude=float(m.get("longitude", 0.0)),
-                dtc_code=m.get("dtc_code"),
-                assigned_officer_id=m_off_id,
-                assigned_officer_name=officer_names_map.get(m_off_id) if m_off_id else None,
-                uploaded_by_officer_id=m.get("uploaded_by_officer_id")
-            )
+    meters = [
+        MeterSchema(
+            meter_id=m.meter_id,
+            meter_number=m.meter_number,
+            customer_id=m.customer_id,
+            latitude=float(m.latitude or 0.0),
+            longitude=float(m.longitude or 0.0),
+            dtc_code=m.dtc_code,
+            assigned_officer_id=m.assigned_officer_id,
+            assigned_officer_name=m.assigned_officer_name,
+            uploaded_by_officer_id=m.uploaded_by_officer_id
         )
-
-    officer_name = officer_names_map.get(cus.get("assigned_officer_id"))
-
-    c_lat = float(cus.get("latitude", 0.0))
-    c_lng = float(cus.get("longitude", 0.0))
-    c_dtc = cus.get("dtc_code")
-
-    if (c_lat == 0.0 or c_lng == 0.0) and meters:
-        for m in meters:
-            if m.latitude != 0.0 and m.longitude != 0.0:
-                c_lat, c_lng = m.latitude, m.longitude
-                break
-
-    if not c_dtc and meters:
-        for m in meters:
-            if m.dtc_code:
-                c_dtc = m.dtc_code
-                break
+        for m in meters_docs
+    ]
 
     return CustomerResponse(
-        id=str(cus["_id"]),
-        customer_id=cus.get("customer_id"),
-        name=cus.get("name"),
-        meter_number=cus.get("meter_number", ""),
-        phone=cus.get("phone", ""),
-        email=cus.get("email"),
-        address=cus.get("address", ""),
-        area=cus.get("area", ""),
-        latitude=c_lat,
-        longitude=c_lng,
-        dtc_code=c_dtc,
-        disconnection_status=cus.get("disconnection_status"),
-        pending_amount=float(cus.get("pending_amount", 0.0)),
-        due_date=cus.get("due_date"),
-        pending_days=cus.get("pending_days") if cus.get("pending_days") is not None else (cus.get("pending days") if cus.get("pending days") is not None else cus.get("days")),
-        status=cus.get("status", "pending"),
-        priority=cus.get("priority", "normal"),
-        assigned_officer_id=cus.get("assigned_officer_id"),
-        assigned_officer_name=officer_name,
-        uploaded_by_officer_id=cus.get("uploaded_by_officer_id"),
+        id=str(cus.id),
+        customer_id=cus.customer_id,
+        name=cus.name,
+        meter_number=cus.meter_number or "",
+        phone=cus.phone or "",
+        email=cus.email,
+        address=cus.address or "",
+        area=cus.area or "",
+        latitude=float(cus.latitude),
+        longitude=float(cus.longitude),
+        dtc_code=cus.dtc_code,
+        disconnection_status=cus.disconnection_status,
+        pending_amount=float(cus.pending_amount or 0.0),
+        due_date=cus.due_date,
+        pending_days=cus.pending_days,
+        status=cus.status or "pending",
+        priority=cus.priority or "normal",
+        assigned_officer_id=cus.assigned_officer_id,
+        assigned_officer_name=cus.assigned_officer_name,
+        uploaded_by_officer_id=cus.uploaded_by_officer_id,
         meters=meters,
-        created_at=str(cus.get("created_at", "")),
-        updated_at=str(cus.get("updated_at", ""))
+        created_at=str(cus.created_at or ""),
+        updated_at=str(cus.updated_at or "")
     )
 
+@router.put("/{customer_id}", response_model=CustomerResponse)
+async def update_customer(
+    customer_id: str,
+    request: CustomerUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    stmt = select(Customer).where(Customer.customer_id == customer_id)
+    cus = (await db.execute(stmt)).scalar_one_or_none()
+    if not cus:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if request.name is not None:
+        cus.name = request.name
+    if request.phone is not None:
+        cus.phone = request.phone
+    if request.email is not None:
+        cus.email = request.email
+    if request.address is not None:
+        cus.address = request.address
+    if request.area is not None:
+        cus.area = request.area
+    if request.latitude is not None and request.longitude is not None:
+        cus.latitude = request.latitude
+        cus.longitude = request.longitude
+        cus.location = point_wkt(request.longitude, request.latitude)
+    if request.dtc_code is not None:
+        cus.dtc_code = CustomerImportService.normalize_dtc_code(request.dtc_code)
+    if request.disconnection_status is not None:
+        cus.disconnection_status = request.disconnection_status
+    if request.pending_days is not None:
+        cus.pending_days = str(request.pending_days)
+    if request.assigned_officer_id is not None:
+        cus.assigned_officer_id = request.assigned_officer_id
+    if request.status is not None:
+        cus.status = request.status
+
+    cus.updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    await db.commit()
+    await db.refresh(cus)
+    await invalidate_customer_caches()
+
+    return await get_customer(customer_id=customer_id, db=db, current_user=current_user)
+
+@router.delete("/{customer_id}")
+async def delete_customer(
+    customer_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    await db.execute(delete(Customer).where(Customer.customer_id == customer_id))
+    await db.execute(delete(Meter).where(Meter.customer_id == customer_id))
+    await db.commit()
+    await invalidate_customer_caches()
+    return {"message": f"Customer '{customer_id}' deleted successfully"}
 
 @router.post("/upload")
 async def upload_customers_bulk(
     file: UploadFile = File(...),
-    db: AsyncIOMotorDatabase = Depends(get_database),
+    replace_all: bool = Query(True, description="Replace all old customer records before importing"),
+    db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Bulk import customer records from CSV or XLSX files."""
+    """Bulk import customer records from CSV or XLSX files into PostgreSQL."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
 
     user_id_str = str(current_user["_id"])
     officer_id = None
-    officer_doc = await db.officers.find_one({
-        "$or": [
-            {"user_id": current_user["_id"]},
-            {"user_id": user_id_str},
-            {"email": current_user.get("email")}
-        ]
-    })
+    res = await db.execute(select(Officer).where(
+        or_(
+            Officer.user_id == user_id_str,
+            Officer.email == current_user.get("email")
+        )
+    ))
+    officer_doc = res.scalar_one_or_none()
     if officer_doc:
-        officer_id = officer_doc.get("officer_id")
+        officer_id = officer_doc.officer_id
 
-    return await CustomerImportService.import_customers(
+    result = await CustomerImportService.import_customers(
         file=file,
         db=db,
         uploader_officer_id=officer_id,
-        user_id_str=user_id_str
+        user_id_str=user_id_str,
+        replace_all=replace_all
     )
-
-
+    await invalidate_customer_caches()
+    return result

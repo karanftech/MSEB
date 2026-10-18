@@ -6,8 +6,14 @@ interface CacheEntry<T> {
   data: T;
 }
 
-const CACHE_TTL_MS = 10000; // 10 seconds short-lived memory cache
+const CACHE_TTL_MS = 30000; // 30 seconds short-lived memory cache
 const cacheStore = new Map<string, CacheEntry<any>>();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('customers-updated', () => {
+    cacheStore.clear();
+  });
+}
 
 export const customerService = {
   clearCache() {
@@ -77,17 +83,18 @@ export const customerService = {
     return response.data;
   },
 
-  async uploadCustomers(file: File): Promise<{
+  async uploadCustomers(file: File, replaceAll: boolean = true): Promise<{
     success: boolean;
     filename: string;
     total_processed: number;
     inserted_count: number;
     updated_count: number;
+    deleted_count: number;
     errors: string[];
   }> {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await api.post('/api/customers/upload', formData, {
+    const response = await api.post(`/api/customers/upload?replace_all=${replaceAll}`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },

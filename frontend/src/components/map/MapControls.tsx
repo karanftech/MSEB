@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Crosshair, Layers, Maximize2, Eye, Plus, Minus, Check, Menu, X, Volume2, VolumeX, Compass, Box } from 'lucide-react';
+import { Crosshair, Layers, Maximize2, Plus, Minus, Check, Menu, X, Volume2, VolumeX, Compass, Box } from 'lucide-react';
 import { MapLayerType } from '@/types';
 
 interface MapControlsProps {
@@ -16,7 +16,6 @@ interface MapControlsProps {
   onFitBounds: () => void;
   onResetNorth?: () => void;
   onToggle3D?: () => void;
-  onOpenStreetView?: () => void;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
 }
@@ -33,7 +32,6 @@ export default function MapControls({
   onFitBounds,
   onResetNorth,
   onToggle3D,
-  onOpenStreetView,
   onZoomIn,
   onZoomOut,
 }: MapControlsProps) {
@@ -190,22 +188,6 @@ export default function MapControls({
                 title={isMuted ? 'Unmute Navigation Audio' : 'Mute Navigation Audio'}
               >
                 {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              </button>
-            ),
-          },
-        ]
-      : []),
-    ...(onOpenStreetView
-      ? [
-          {
-            id: 'streetView',
-            node: (
-              <button
-                onClick={onOpenStreetView}
-                className="w-10 h-10 rounded-full bg-white/95 text-indigo-600 hover:bg-indigo-50 border border-slate-200 shadow-lg flex items-center justify-center transition-all duration-200 ease-out hover:scale-110 active:scale-95 cursor-pointer"
-                title="View 360° Street View"
-              >
-                <Eye className="w-4 h-4" />
               </button>
             ),
           },
