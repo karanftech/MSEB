@@ -185,6 +185,7 @@ export default function MapView({
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
   const routePolylineCasingRef = useRef<any>(null);
   const routePolylineRef = useRef<any>(null);
+  const routeCanvasRendererRef = useRef<any>(null);
   const lastDrawnRouteKeyRef = useRef<string>('');
   const LRef = useRef<any>(null);
 
@@ -286,6 +287,35 @@ export default function MapView({
           console.warn('Leaflet-Rotate plugin note:', rotErr);
         }
 
+        // Patch Leaflet-Rotate's Renderer prototype to prevent route polyline drift on rotation & zoom:
+        // 1. leaflet-rotate attaches `rotate: this._update` to L.Renderer.prototype.
+        //    Since overlayPane is a child of _rotatePane, the entire layer already rotates in 100% lockstep
+        //    with map tiles via CSS hardware acceleration. Calling _update on every rotate frame corrupts
+        //    container pixel bounds in rotated space, causing the route to disconnect and drift away from roads.
+        // 2. Neutralize the flawed _updateTransform in leaflet-rotate (which causes layer drift on map.setZoom()).
+        if (L && (L as any).Renderer) {
+          const rendererProto = (L as any).Renderer.prototype;
+          if (rendererProto) {
+            const originalGetEvents = rendererProto.getEvents;
+            rendererProto.getEvents = function () {
+              const events = originalGetEvents ? originalGetEvents.apply(this, arguments) : {};
+              if (events && events.rotate) {
+                delete events.rotate;
+              }
+              return events;
+            };
+
+            if (rendererProto._updateTransform) {
+              rendererProto._updateTransform = function (center: any, zoom: number) {
+                if (!this._map) return;
+                const scale = this._map.getZoomScale(zoom, this._zoom);
+                const position = (L as any).DomUtil.getPosition(this._container) || new (L as any).Point(0, 0);
+                (L as any).DomUtil.setTransform(this._container, position, scale);
+              };
+            }
+          }
+        }
+
         if (!isMounted || !mapContainerRef.current || leafletMapRef.current) return;
 
         const defaultLat = officerCoords?.latitude ?? 21.1458;
@@ -299,11 +329,29 @@ export default function MapView({
           bearing: officerHeading || 0,
           touchRotate: false, // Managed by our high-performance RAF gesture controller
           touchZoom: true,
+          zoomAnimation: false, // Disables flawed zoom animation transform in leaflet-rotate so paths stay pinned to roads
           shiftKeyRotate: true,
           rotateControl: false,
           zoomControl: false,
           attributionControl: false,
         });
+
+        // Initialize dedicated Canvas renderer for routes (high GPU performance & zero SVG DOM distortion)
+        routeCanvasRendererRef.current = (L as any).canvas({ padding: 0.75 });
+
+        // Keep routes locked with sub-pixel precision whenever rotation or zoom gesture finishes
+        const handleRouteSync = () => {
+          if (routePolylineRef.current && typeof routePolylineRef.current.redraw === 'function') {
+            routePolylineRef.current.redraw();
+          }
+          if (routePolylineCasingRef.current && typeof routePolylineCasingRef.current.redraw === 'function') {
+            routePolylineCasingRef.current.redraw();
+          }
+        };
+
+        map.on('rotateend', handleRouteSync);
+        map.on('zoomend', handleRouteSync);
+        map.on('moveend', handleRouteSync);
 
         // Set tile layer
         const layerConfig = TILE_LAYERS['roadmap'];
@@ -831,17 +879,28 @@ export default function MapView({
     lastDrawnRouteKeyRef.current = routeKey;
 
     if (routePolylineRef.current && routePolylineCasingRef.current) {
-      // Update coordinates on existing SVG layers without DOM teardown
+      // Update coordinates on existing layers without DOM teardown
       routePolylineCasingRef.current.setLatLngs(latLngs);
       routePolylineRef.current.setLatLngs(latLngs);
+      if (typeof routePolylineRef.current.redraw === 'function') {
+        routePolylineRef.current.redraw();
+      }
+      if (typeof routePolylineCasingRef.current.redraw === 'function') {
+        routePolylineCasingRef.current.redraw();
+      }
     } else {
-      // Create new polyline layers if not existing
+      if (!routeCanvasRendererRef.current && L) {
+        routeCanvasRendererRef.current = (L as any).canvas({ padding: 0.75 });
+      }
+
+      // Create new polyline layers with dedicated Canvas renderer (hardware-accelerated, zero DOM distortion)
       routePolylineCasingRef.current = L.polyline(latLngs, {
         color: '#0284c7',
         weight: 8,
         opacity: 0.45,
         lineCap: 'round',
         lineJoin: 'round',
+        renderer: routeCanvasRendererRef.current,
       }).addTo(map);
 
       routePolylineRef.current = L.polyline(latLngs, {
@@ -850,6 +909,7 @@ export default function MapView({
         opacity: 0.95,
         lineCap: 'round',
         lineJoin: 'round',
+        renderer: routeCanvasRendererRef.current,
       }).addTo(map);
     }
 
