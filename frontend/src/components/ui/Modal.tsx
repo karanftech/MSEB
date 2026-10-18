@@ -29,7 +29,7 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 'ma
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-fade-in">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
       <div
         className={`bg-white border border-slate-200 rounded-lg w-full ${maxWidth} overflow-hidden shadow-xl text-slate-900 flex flex-col max-h-[90vh]`}
       >

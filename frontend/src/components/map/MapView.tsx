@@ -159,6 +159,42 @@ export default function MapView({
   const isMuted = isMutedProp !== undefined ? isMutedProp : isMutedInternal;
   const isFollowing = navState?.isFollowing ?? isFollowingInternal;
 
+  const onCollectPaymentRef = useRef(onCollectPayment);
+  onCollectPaymentRef.current = onCollectPayment;
+
+  const customersRef = useRef(customers);
+  customersRef.current = customers;
+
+  // Global & Delegated listener for Leaflet popup Collect Payment button
+  useEffect(() => {
+    (window as any).__mvCollectPayment = (customerId: string) => {
+      const cust = customersRef.current.find((c) => c.customer_id === customerId);
+      if (cust && onCollectPaymentRef.current) {
+        onCollectPaymentRef.current(cust);
+      }
+    };
+
+    const container = mapContainerRef.current;
+    if (!container) return;
+
+    const handleContainerCollectClick = (e: MouseEvent | TouchEvent) => {
+      const target = (e.target as HTMLElement)?.closest('[data-collect-customer-id]');
+      if (target) {
+        e.stopPropagation();
+        const customerId = target.getAttribute('data-collect-customer-id');
+        if (customerId && (window as any).__mvCollectPayment) {
+          (window as any).__mvCollectPayment(customerId);
+        }
+      }
+    };
+
+    container.addEventListener('click', handleContainerCollectClick, true);
+    return () => {
+      container.removeEventListener('click', handleContainerCollectClick, true);
+      delete (window as any).__mvCollectPayment;
+    };
+  }, []);
+
   const handleToggleMute = () => {
     if (onToggleMuteProp) {
       onToggleMuteProp();
@@ -484,7 +520,10 @@ export default function MapView({
 
           <button
             id="leaflet-collect-btn-${customer.customer_id}"
-            style="width: 100%; padding: 7px 10px; background: #059669; color: #ffffff; border: none; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: background 0.2s;"
+            data-collect-customer-id="${customer.customer_id}"
+            type="button"
+            onclick="event.stopPropagation(); if (window.__mvCollectPayment) { window.__mvCollectPayment('${customer.customer_id}'); }"
+            style="width: 100%; padding: 8px 10px; background: #059669; color: #ffffff; border: none; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: background 0.2s; -webkit-tap-highlight-color: transparent;"
             onmouseover="this.style.background='#047857'"
             onmouseout="this.style.background='#059669'"
           >
@@ -498,6 +537,17 @@ export default function MapView({
         marker.setIcon(icon);
         marker.setZIndexOffset(isSelected || isCurrentStop ? 1000 : 100);
         marker.getPopup()?.setContent(popupHtml);
+
+        // Immediately re-bind direct click handler if popup is already open
+        setTimeout(() => {
+          const btn = document.getElementById(`leaflet-collect-btn-${customer.customer_id}`);
+          if (btn) {
+            btn.onclick = (e) => {
+              e.stopPropagation();
+              if (onCollectPayment) onCollectPayment(customer);
+            };
+          }
+        }, 0);
       } else {
         marker = L.marker(pos, { icon, zIndexOffset: isSelected || isCurrentStop ? 1000 : 100 }).addTo(map);
 
@@ -515,13 +565,15 @@ export default function MapView({
         });
 
         marker.on('popupopen', () => {
-          const btn = document.getElementById(`leaflet-collect-btn-${customer.customer_id}`);
-          if (btn) {
-            btn.onclick = (e) => {
-              e.stopPropagation();
-              if (onCollectPayment) onCollectPayment(customer);
-            };
-          }
+          setTimeout(() => {
+            const btn = document.getElementById(`leaflet-collect-btn-${customer.customer_id}`);
+            if (btn) {
+              btn.onclick = (e) => {
+                e.stopPropagation();
+                if (onCollectPayment) onCollectPayment(customer);
+              };
+            }
+          }, 0);
         });
 
         customerMarkersRef.current.set(customer.customer_id, marker);
