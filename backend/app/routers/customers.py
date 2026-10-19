@@ -22,7 +22,7 @@ from app.schemas.customer import (
 from app.services.customer_service import CustomerService
 from app.services.customer_import_service import CustomerImportService
 from app.services.cache_service import cache_service
-from app.utils.dependencies import get_current_user
+from app.utils.dependencies import get_current_user, get_or_create_officer_context
 
 router = APIRouter(prefix="/api/customers", tags=["Customers"])
 
@@ -35,12 +35,9 @@ async def get_nearby_customers(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    officer_id = None
-    if current_user.get("role") == "field_officer":
-        res = await db.execute(select(Officer).where(Officer.user_id == current_user["_id"]))
-        officer = res.scalar_one_or_none()
-        if officer:
-            officer_id = officer.officer_id
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = current_user.get("role") == "admin"
+    officer_filter = None if is_admin else list(officer_ctx["filter_ids"])
 
     return await CustomerService.get_nearby_customers(
         db=db,
@@ -48,7 +45,7 @@ async def get_nearby_customers(
         longitude=longitude,
         radius_meters=radius,
         status_filter=status,
-        officer_id=officer_id
+        officer_id=officer_filter
     )
 
 @router.get("/dtc-codes", response_model=DTCCodesResponse)
@@ -58,8 +55,11 @@ async def get_dtc_codes(
     current_user: dict = Depends(get_current_user)
 ):
     """Get dynamic distinct DTC codes and meter counts for the authenticated field officer."""
-    user_id_str = str(current_user["_id"])
-    cache_key = f"dtc_codes:{user_id_str}:{all_officers}"
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = current_user.get("role") == "admin"
+    filter_ids = list(officer_ctx["filter_ids"])
+
+    cache_key = f"dtc_codes:{officer_ctx['officer_id']}:{all_officers if is_admin else False}"
 
     cached = await cache_service.get(cache_key)
     if cached:
@@ -75,24 +75,13 @@ async def get_dtc_codes(
         Customer.dtc_code != "NaN"
     )
 
-    if not all_officers:
-        res = await db.execute(select(Officer).where(
+    if not is_admin or not all_officers:
+        stmt = stmt.where(
             or_(
-                Officer.user_id == user_id_str,
-                Officer.email == current_user.get("email")
+                Customer.assigned_officer_id.in_(filter_ids),
+                Customer.uploaded_by_officer_id.in_(filter_ids)
             )
-        ))
-        officer_doc = res.scalar_one_or_none()
-        if officer_doc:
-            off_id = officer_doc.officer_id
-            stmt = stmt.where(
-                or_(
-                    Customer.assigned_officer_id == off_id,
-                    Customer.uploaded_by_officer_id == off_id,
-                    Customer.assigned_officer_id == user_id_str,
-                    Customer.uploaded_by_officer_id == user_id_str
-                )
-            )
+        )
 
     stmt = stmt.group_by(Customer.dtc_code).order_by(Customer.dtc_code)
     results = (await db.execute(stmt)).all()
@@ -127,9 +116,12 @@ async def list_customers(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    user_id_str = str(current_user["_id"])
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = current_user.get("role") == "admin"
+    filter_ids = list(officer_ctx["filter_ids"])
+
     cache_key = (
-        f"customers:list:{user_id_str}:{all_officers}:{assigned_officer_id or ''}:"
+        f"customers:list:{officer_ctx['officer_id']}:{all_officers if is_admin else False}:{assigned_officer_id or ''}:"
         f"{area or ''}:{dtc_code or ''}:{status or ''}:{disconnection_status or ''}:"
         f"{min_amount or ''}:{max_amount or ''}:{search or ''}:{skip}:{limit}"
     )
@@ -140,32 +132,29 @@ async def list_customers(
 
     conditions = []
 
-    if assigned_officer_id:
-        conditions.append(
-            or_(
-                Customer.assigned_officer_id == assigned_officer_id,
-                Customer.uploaded_by_officer_id == assigned_officer_id
-            )
-        )
-    elif not all_officers:
-        user_id_str = str(current_user["_id"])
-        res = await db.execute(select(Officer).where(
-            or_(
-                Officer.user_id == user_id_str,
-                Officer.email == current_user.get("email")
-            )
-        ))
-        officer_doc = res.scalar_one_or_none()
-        if officer_doc:
-            off_id = officer_doc.officer_id
+    if is_admin:
+        if assigned_officer_id:
             conditions.append(
                 or_(
-                    Customer.assigned_officer_id == off_id,
-                    Customer.uploaded_by_officer_id == off_id,
-                    Customer.assigned_officer_id == user_id_str,
-                    Customer.uploaded_by_officer_id == user_id_str
+                    Customer.assigned_officer_id == assigned_officer_id,
+                    Customer.uploaded_by_officer_id == assigned_officer_id
                 )
             )
+        elif not all_officers:
+            conditions.append(
+                or_(
+                    Customer.assigned_officer_id.in_(filter_ids),
+                    Customer.uploaded_by_officer_id.in_(filter_ids)
+                )
+            )
+    else:
+        # Non-admin / Field officer is strictly scoped to their own data only!
+        conditions.append(
+            or_(
+                Customer.assigned_officer_id.in_(filter_ids),
+                Customer.uploaded_by_officer_id.in_(filter_ids)
+            )
+        )
 
     if dtc_code and dtc_code.lower() != 'all':
         conditions.append(Customer.dtc_code == dtc_code)
@@ -535,24 +524,15 @@ async def upload_customers_bulk(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
 
-    user_id_str = str(current_user["_id"])
-    officer_id = None
-    res = await db.execute(select(Officer).where(
-        or_(
-            Officer.user_id == user_id_str,
-            Officer.email == current_user.get("email")
-        )
-    ))
-    officer_doc = res.scalar_one_or_none()
-    if officer_doc:
-        officer_id = officer_doc.officer_id
+    officer_ctx = await get_or_create_officer_context(db, current_user)
 
     result = await CustomerImportService.import_customers(
         file=file,
         db=db,
-        uploader_officer_id=officer_id,
-        user_id_str=user_id_str,
-        replace_all=replace_all
+        uploader_officer_id=officer_ctx["officer_id"],
+        user_id_str=officer_ctx["user_id"],
+        replace_all=replace_all,
+        uploader_officer_name=officer_ctx["officer_name"]
     )
     await invalidate_customer_caches()
     return result

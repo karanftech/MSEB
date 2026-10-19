@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { CreditCard, CheckCircle2, AlertCircle, RefreshCw, Clock, AlertTriangle, X } from 'lucide-react';
+import { CreditCard, CheckCircle2, AlertCircle, RefreshCw, Clock, AlertTriangle, X, ChevronDown } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { Customer, PaymentRecord } from '@/types';
 import { formatCurrency, formatDate, getOverdueDays } from '@/utils/formatters';
@@ -17,7 +17,7 @@ interface PaymentModalProps {
   onSuccess: (paymentRecord: PaymentRecord) => void;
 }
 
-export type PaymentMethodType = 'td' | 'pd' | 'bur' | 'dis';
+export type PaymentMethodType = 'td' | 'pd' | 'bur' | 'dis' | 'other';
 
 export default function PaymentModal({
   isOpen,
@@ -65,10 +65,11 @@ export default function PaymentModal({
       : 0;
 
   const paymentMethodsList = [
-    { key: 'td' as const, label: 'TD', desc: 'Temporary Disconnect' },
-    { key: 'pd' as const, label: 'PD', desc: 'Permanent Disconnect' },
+    { key: 'td' as const, label: 'TD', desc: 'Temporary Disconnection' },
+    { key: 'pd' as const, label: 'PD', desc: 'Permanent Disconnection' },
     { key: 'bur' as const, label: 'BUR', desc: 'Bill Under Review' },
     { key: 'dis' as const, label: 'DIS', desc: 'Disconnected' },
+    { key: 'other' as const, label: 'OTHER', desc: 'Other Action / Status' },
   ];
 
   const handlePreSubmit = (e: React.FormEvent) => {
@@ -76,7 +77,7 @@ export default function PaymentModal({
     setError(null);
 
     const amt = parseFloat(collectedAmount);
-    const isStatusMode = ['td', 'pd', 'bur', 'dis'].includes(paymentMethod);
+    const isStatusMode = ['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod);
 
     if (isNaN(amt) || (isStatusMode ? amt < 0 : amt <= 0)) {
       setError(isStatusMode ? 'Please enter a valid amount (>= 0).' : 'Please enter a valid collection amount greater than 0.');
@@ -103,7 +104,7 @@ export default function PaymentModal({
       meter_id: customer.meters?.[0]?.meter_id,
       amount: amt,
       payment_method: paymentMethod as any,
-      disconnection_status: ['td', 'pd', 'bur', 'dis'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined,
+      disconnection_status: ['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined,
       remarks: remarks.trim() || undefined,
       collection_latitude: officerCoords?.latitude,
       collection_longitude: officerCoords?.longitude,
@@ -235,36 +236,34 @@ export default function PaymentModal({
           />
         </div>
 
-        {/* Action / Meter Status Mode: TD, PD, BUR, DIS */}
+        {/* Action / Status Mode Dropdown */}
         <div>
-          <label className="font-semibold text-slate-700 block mb-1.5">Action / Status Mode *</label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {paymentMethodsList.map((method) => {
-              const isSelected = paymentMethod === method.key;
-              const isStatus = ['td', 'pd', 'bur', 'dis'].includes(method.key);
-              return (
-                <button
-                  key={method.key}
-                  type="button"
-                  onClick={() => {
-                    setPaymentMethod(method.key);
-                  }}
-                  className={`py-2 px-2 rounded-lg font-bold text-left transition-all border cursor-pointer ${
-                    isSelected
-                      ? isStatus
-                        ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
-                        : 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <p className="text-[11px] font-black uppercase leading-tight">{method.label}</p>
-                  <p className={`text-[9px] font-medium leading-none mt-0.5 truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
-                    {method.desc}
-                  </p>
-                </button>
-              );
-            })}
+          <label htmlFor="action-status-mode-select" className="font-semibold text-slate-700 block mb-1.5">
+            Action / Status Mode *
+          </label>
+          <div className="relative">
+            <select
+              id="action-status-mode-select"
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value as PaymentMethodType)}
+              className="w-full appearance-none bg-white border border-slate-300 hover:border-slate-400 text-slate-900 font-bold text-sm rounded-lg px-3.5 py-2.5 pr-10 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition-colors shadow-2xs cursor-pointer"
+              required
+            >
+              {paymentMethodsList.map((method) => (
+                <option key={method.key} value={method.key} className="py-1 font-semibold text-slate-800">
+                  {method.label} – {method.desc}
+                </option>
+              ))}
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500">
+              <ChevronDown className="w-4 h-4" />
+            </div>
           </div>
+          {paymentMethod === 'other' && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 mt-2">
+              Please enter details of the other action or status in the Remarks field below.
+            </p>
+          )}
         </div>
 
         {/* Remarks Input */}

@@ -12,7 +12,7 @@ from app.models.payment import Payment
 from app.schemas.dashboard import OfficerDashboardMetrics
 from app.services.customer_service import CustomerService
 from app.services.cache_service import cache_service
-from app.utils.dependencies import get_current_user
+from app.utils.dependencies import get_current_user, get_or_create_officer_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
@@ -33,10 +33,14 @@ async def get_officer_dashboard(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        user_id_str = str(current_user["_id"])
+        officer_ctx = await get_or_create_officer_context(db, current_user)
+        officer_doc = officer_ctx["officer_doc"]
+        officer_id = officer_ctx["officer_id"]
+        filter_ids = list(officer_ctx["filter_ids"])
+
         lat_rounded = round(latitude or 21.1458, 3)
         lng_rounded = round(longitude or 79.0882, 3)
-        cache_key = f"dashboard:officer:{user_id_str}:{lat_rounded}:{lng_rounded}"
+        cache_key = f"dashboard:officer:{officer_id}:{lat_rounded}:{lng_rounded}"
 
         cached_metrics = await cache_service.get(cache_key)
         if cached_metrics:
@@ -44,36 +48,20 @@ async def get_officer_dashboard(
 
         today_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # 1. Fetch officer record
-        res = await db.execute(select(Officer).where(
+        # Build customer filter strictly for this officer
+        officer_cus_conds = [
             or_(
-                Officer.user_id == current_user["_id"],
-                Officer.email == current_user.get("email")
+                Customer.assigned_officer_id.in_(filter_ids),
+                Customer.uploaded_by_officer_id.in_(filter_ids)
             )
-        ))
-        officer_doc = res.scalar_one_or_none()
-        officer_id = officer_doc.officer_id if officer_doc else None
-
-        # Build customer filter for officer
-        officer_cus_conds = []
-        if officer_id:
-            officer_cus_conds.append(
-                or_(
-                    Customer.assigned_officer_id == officer_id,
-                    Customer.uploaded_by_officer_id == officer_id
-                )
-            )
+        ]
 
         # Total assigned customers
-        tot_stmt = select(func.count(Customer.id))
-        if officer_cus_conds:
-            tot_stmt = tot_stmt.where(and_(*officer_cus_conds))
+        tot_stmt = select(func.count(Customer.id)).where(and_(*officer_cus_conds))
         total_assigned = (await db.execute(tot_stmt)).scalar() or 0
 
         # Pending customers count & total pending amount
-        pending_conds = [Customer.status.in_(["pending", "overdue", "partially_paid"])]
-        if officer_cus_conds:
-            pending_conds.extend(officer_cus_conds)
+        pending_conds = [Customer.status.in_(["pending", "overdue", "partially_paid"])] + officer_cus_conds
         pending_stmt = select(
             func.count(Customer.id),
             func.coalesce(func.sum(Customer.pending_amount), 0.0)
@@ -83,16 +71,15 @@ async def get_officer_dashboard(
         total_pending_amount = float(pend_row[1]) if pend_row else 0.0
 
         # Paid count
-        paid_conds = [Customer.status == "paid"]
-        if officer_cus_conds:
-            paid_conds.extend(officer_cus_conds)
+        paid_conds = [Customer.status == "paid"] + officer_cus_conds
         paid_stmt = select(func.count(Customer.id)).where(and_(*paid_conds))
         paid_count = (await db.execute(paid_stmt)).scalar() or 0
 
         # Today's collected amount & count
-        pmt_conds = [Payment.created_at.like(f"{today_date_str}%")]
-        if officer_id:
-            pmt_conds.append(Payment.officer_id == officer_id)
+        pmt_conds = [
+            Payment.created_at.like(f"{today_date_str}%"),
+            Payment.officer_id.in_(filter_ids)
+        ]
         pmt_stmt = select(
             func.count(Payment.id),
             func.coalesce(func.sum(Payment.amount), 0.0)
@@ -102,21 +89,19 @@ async def get_officer_dashboard(
         today_collected_amount = float(pmt_row[1]) if pmt_row else 0.0
 
         # Targets
-        target_amount = float(officer_doc.target_collection_amount) if officer_doc else 30000.0
+        target_amount = float(officer_doc.target_collection_amount) if officer_doc and officer_doc.target_collection_amount else 30000.0
         remaining_collections_count = max(0, pending_count)
         remaining_collections_amount = max(0.0, total_pending_amount)
 
         # Categorized disconnection statuses
-        categories = {"TD": [0, 0.0], "PD": [0, 0.0], "BUR": [0, 0.0], "DIS": [0, 0.0]}
+        categories = {"TD": [0, 0.0], "PD": [0, 0.0], "BUR": [0, 0.0], "DIS": [0, 0.0], "OTHER": [0, 0.0]}
         for cat in categories.keys():
             cat_conds = [
                 or_(
                     Customer.disconnection_status.ilike(cat),
                     Customer.status.ilike(cat)
                 )
-            ]
-            if officer_cus_conds:
-                cat_conds.extend(officer_cus_conds)
+            ] + officer_cus_conds
             cat_stmt = select(
                 func.count(Customer.id),
                 func.coalesce(func.sum(Customer.pending_amount), 0.0)
@@ -132,7 +117,7 @@ async def get_officer_dashboard(
             longitude=longitude or 79.0882,
             radius_meters=5000.0,
             status_filter=None,
-            officer_id=officer_id,
+            officer_id=filter_ids,
             limit=10
         )
 
@@ -153,6 +138,8 @@ async def get_officer_dashboard(
             bur_pending_amount=round(categories["BUR"][1], 2),
             dis_customers_count=categories["DIS"][0],
             dis_pending_amount=round(categories["DIS"][1], 2),
+            other_customers_count=categories["OTHER"][0],
+            other_pending_amount=round(categories["OTHER"][1], 2),
             nearby_pending_customers=nearby
         )
         await cache_service.set(cache_key, metrics.model_dump(), ttl=60)

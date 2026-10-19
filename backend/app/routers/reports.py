@@ -7,7 +7,7 @@ from app.database import get_db
 from app.models.customer import Customer
 from app.models.officer import Officer
 from app.models.payment import Payment
-from app.utils.dependencies import get_current_user
+from app.utils.dependencies import get_current_user, get_or_create_officer_context
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
@@ -26,33 +26,18 @@ async def get_field_performance_report(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    res = await db.execute(select(Officer).where(
-        or_(
-            Officer.user_id == current_user["_id"],
-            Officer.email == current_user.get("email")
-        )
-    ))
-    officer_doc = res.scalar_one_or_none()
-    officer_id = officer_doc.officer_id if officer_doc else None
-    user_id_str = str(current_user["_id"])
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    filter_ids = list(officer_ctx["filter_ids"])
 
-    cus_conds = []
-    pmt_conds = []
-    if officer_id:
-        cus_conds.append(
-            or_(
-                Customer.assigned_officer_id == officer_id,
-                Customer.uploaded_by_officer_id == officer_id,
-                Customer.assigned_officer_id == user_id_str,
-                Customer.uploaded_by_officer_id == user_id_str
-            )
+    cus_conds = [
+        or_(
+            Customer.assigned_officer_id.in_(filter_ids),
+            Customer.uploaded_by_officer_id.in_(filter_ids)
         )
-        pmt_conds.append(
-            or_(
-                Payment.officer_id == officer_id,
-                Payment.officer_id == user_id_str
-            )
-        )
+    ]
+    pmt_conds = [
+        Payment.officer_id.in_(filter_ids)
+    ]
 
     cus_stmt = select(Customer)
     if cus_conds:

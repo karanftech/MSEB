@@ -165,10 +165,10 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                   className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
                 />
                 <div>
-                  <span className="text-xs font-bold text-slate-800">Replace all old data</span>
+                  <span className="text-xs font-bold text-slate-800">Override my previously uploaded records</span>
                   <span className="text-[11px] text-slate-500 block">
                     {replaceAll
-                      ? 'Wipes existing customer & meter records before importing the new file.'
+                      ? 'Replaces only your previous records with the new upload. Other officers’ data remains completely untouched.'
                       : 'Keep existing records and update matching consumer IDs (additive import).'}
                   </span>
                 </div>

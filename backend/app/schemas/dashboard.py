@@ -19,5 +19,7 @@ class OfficerDashboardMetrics(BaseModel):
     bur_pending_amount: float = 0.0
     dis_customers_count: int = 0
     dis_pending_amount: float = 0.0
+    other_customers_count: int = 0
+    other_pending_amount: float = 0.0
     nearby_pending_customers: List[NearbyCustomerResponse] = []
 

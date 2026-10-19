@@ -1,5 +1,6 @@
 import api from './api';
 import { User } from '@/types';
+import { customerService } from './customerService';
 
 export interface LoginResponse {
   access_token: string;
@@ -11,6 +12,7 @@ const TOKEN_KEY = 'mv_token';
 const USER_KEY = 'mv_user';
 
 function saveSession(token: string, user: User) {
+  customerService.clearCache();
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   if (typeof window !== 'undefined') {
@@ -21,6 +23,7 @@ function saveSession(token: string, user: User) {
 }
 
 function clearSession() {
+  customerService.clearCache();
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   // Also clear any old keys from previous implementation

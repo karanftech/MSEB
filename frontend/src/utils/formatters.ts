@@ -59,37 +59,69 @@ export function formatDuration(seconds?: number | null): string {
   return `${hrs} hr ${remMins} min`;
 }
 
-export function getOverdueDays(dueDateString?: string | null): number {
-  if (!dueDateString) return 0;
-  try {
-    const due = new Date(dueDateString);
-    if (isNaN(due.getTime())) return 0;
-    const today = new Date();
-    due.setHours(0, 0, 0, 0);
-    today.setHours(0, 0, 0, 0);
-    const diffTime = today.getTime() - due.getTime();
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays > 0 ? diffDays : 0;
-  } catch {
-    return 0;
+export function getOverdueDays(customerOrDueDate?: any): number {
+  if (!customerOrDueDate) return 0;
+
+  // 1. If an object/customer was passed, prioritize customer.pending_days
+  if (typeof customerOrDueDate === 'object') {
+    const rawDays =
+      customerOrDueDate.pending_days ??
+      customerOrDueDate.pendingDays ??
+      customerOrDueDate['pending days'] ??
+      customerOrDueDate.days;
+
+    if (rawDays !== undefined && rawDays !== null && rawDays !== '') {
+      const parsed = parseInt(String(rawDays).trim(), 10);
+      if (!isNaN(parsed) && parsed >= 0) return parsed;
+    }
+    customerOrDueDate = customerOrDueDate.due_date;
   }
+
+  if (typeof customerOrDueDate === 'number') {
+    return isNaN(customerOrDueDate) ? 0 : Math.max(0, customerOrDueDate);
+  }
+
+  if (typeof customerOrDueDate === 'string') {
+    const trimmed = customerOrDueDate.trim();
+    if (/^\d+$/.test(trimmed)) {
+      return parseInt(trimmed, 10);
+    }
+    try {
+      const due = new Date(trimmed);
+      if (!isNaN(due.getTime())) {
+        const today = new Date();
+        due.setHours(0, 0, 0, 0);
+        today.setHours(0, 0, 0, 0);
+        const diffTime = today.getTime() - due.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays > 0 ? diffDays : 0;
+      }
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
 }
 
 export function matchCustomerFilters(
   customer: {
     pending_amount: number;
     due_date?: string;
+    pending_days?: number | string;
+    disconnection_status?: string;
     status: string;
     priority?: string;
     name: string;
     customer_id: string;
     meter_number: string;
     address: string;
+    phone?: string;
     dtc_code?: string;
   },
   filters: {
     overduePeriod?: string;
     outstandingAmount?: string;
+    disconnectionStatus?: string;
     status?: string;
     dtcCode?: string;
     searchQuery?: string;
@@ -105,9 +137,23 @@ export function matchCustomerFilters(
     if (custDtc !== filterDtc && !meterDtcMatch) return false;
   }
 
-  // 2. Overdue Period Filter (Days overdue)
+  // 2. Disconnection Status / Action Mode Filter (TD, PD, BUR, DIS, OTHER)
+  if (filters.disconnectionStatus && filters.disconnectionStatus !== 'all') {
+    const filterKey = filters.disconnectionStatus.toLowerCase().trim();
+    const custDisconn = String(customer.disconnection_status || '').toLowerCase().trim();
+    const custStatus = String(customer.status || '').toLowerCase().trim();
+
+    if (filterKey === 'other') {
+      const isStandard = ['td', 'pd', 'bur', 'dis'].some(k => custDisconn.includes(k) || custStatus.includes(k));
+      if (isStandard) return false;
+    } else {
+      if (!custDisconn.includes(filterKey) && !custStatus.includes(filterKey)) return false;
+    }
+  }
+
+  // 3. Overdue Period Filter (Days overdue - checks pending_days first)
   if (filters.overduePeriod && filters.overduePeriod !== 'all') {
-    const days = getOverdueDays(customer.due_date);
+    const days = getOverdueDays(customer);
     if (filters.overduePeriod === 'days_over_35' && days <= 35) return false;
     if (filters.overduePeriod === 'days_over_40' && days <= 40) return false;
     if (filters.overduePeriod === 'days_over_45' && days <= 45) return false;
@@ -123,9 +169,12 @@ export function matchCustomerFilters(
     if (filters.overduePeriod === 'over_120' && days <= 120) return false;
   }
 
-  // 3. Outstanding Amount Filter
+  // 4. Outstanding Amount Filter
   if (filters.outstandingAmount && filters.outstandingAmount !== 'all') {
-    const amt = customer.pending_amount || 0;
+    const amt = typeof customer.pending_amount === 'number'
+      ? customer.pending_amount
+      : parseFloat(String(customer.pending_amount || 0)) || 0;
+
     if (filters.outstandingAmount === 'amt_0_100' && (amt < 0 || amt > 100)) return false;
     if (filters.outstandingAmount === 'amt_over_100' && amt <= 100) return false;
     if (filters.outstandingAmount === 'amt_over_500' && amt <= 500) return false;
@@ -139,22 +188,23 @@ export function matchCustomerFilters(
     if (filters.outstandingAmount === 'over_10000' && amt <= 10000) return false;
   }
 
-  // 4. Status Filter (compatibility)
+  // 5. Status Filter (compatibility)
   if (filters.status && filters.status !== 'all') {
     if (filters.status === 'pending' && customer.status === 'paid') return false;
     if (filters.status === 'overdue' && customer.status !== 'overdue' && customer.priority !== 'high' && customer.priority !== 'critical') return false;
     if (filters.status === 'collected' && customer.status !== 'paid') return false;
   }
 
-  // 5. Search Query
+  // 6. Search Query
   if (filters.searchQuery && filters.searchQuery.trim()) {
-    const q = filters.searchQuery.toLowerCase();
-    const matchName = customer.name.toLowerCase().includes(q);
-    const matchId = customer.customer_id.toLowerCase().includes(q);
-    const matchMeter = customer.meter_number.toLowerCase().includes(q);
-    const matchAddr = customer.address.toLowerCase().includes(q);
+    const q = filters.searchQuery.toLowerCase().trim();
+    const matchName = (customer.name || '').toLowerCase().includes(q);
+    const matchId = (customer.customer_id || '').toLowerCase().includes(q);
+    const matchMeter = (customer.meter_number || '').toLowerCase().includes(q);
+    const matchAddr = (customer.address || '').toLowerCase().includes(q);
+    const matchPhone = (customer.phone || '').toLowerCase().includes(q);
     const matchDtc = (customer.dtc_code || '').toLowerCase().includes(q);
-    if (!matchName && !matchId && !matchMeter && !matchAddr && !matchDtc) return false;
+    if (!matchName && !matchId && !matchMeter && !matchAddr && !matchDtc && !matchPhone) return false;
   }
 
   return true;

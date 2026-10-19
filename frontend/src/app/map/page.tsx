@@ -72,8 +72,14 @@ function MapPageContent() {
     setSpeechMuted(isMuted);
   }, [isMuted]);
 
+  const urlStatus = searchParams.get('status');
+  const urlDisconn = searchParams.get('disconnection_status');
+  const urlDtc = searchParams.get('dtc') || searchParams.get('dtc_code');
+
   const [filters, setFilters] = useState<MapFilterState>({
-    status: 'all',
+    status: (urlStatus as any) || 'all',
+    disconnectionStatus: (urlDisconn as any) || 'all',
+    dtcCode: urlDtc || 'all',
     overduePeriod: 'all',
     outstandingAmount: 'all',
     searchQuery: '',
@@ -113,6 +119,10 @@ function MapPageContent() {
 
   useEffect(() => {
     loadCustomers();
+
+    const handleCustUpdate = () => loadCustomers();
+    window.addEventListener('customers-updated', handleCustUpdate);
+    return () => window.removeEventListener('customers-updated', handleCustUpdate);
   }, [targetCusId]);
 
   // Update officer position for navigation & off-route detection
