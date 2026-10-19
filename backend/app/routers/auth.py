@@ -110,14 +110,21 @@ async def login(
     res = await db.execute(select(User).where(User.email == clean_email))
     user = res.scalar_one_or_none()
 
+    demo_defaults = {
+        "officer@electricity.gov.in": ("OFF-1001", "Field Officer 1"),
+        "officer1@electricity.gov.in": ("OFF-1002", "Field Officer 2"),
+        "officer@mahavitaran.in": ("OFF-1003", "Field Officer 3"),
+    }
+
     # Auto-seed default officer account for demo emails
-    if not user and clean_email in ["officer@electricity.gov.in", "officer1@electricity.gov.in", "officer@mahavitaran.in"]:
+    if not user and clean_email in demo_defaults:
+        preferred_off_id, def_name = demo_defaults[clean_email]
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         pwd_hash = await get_password_hash_async(request.password if request.password else "officer123")
         user = User(
             email=clean_email,
             password_hash=pwd_hash,
-            full_name="Field Officer",
+            full_name=def_name,
             role="field_officer",
             phone="+91 98220 00000",
             is_active=True,
@@ -126,10 +133,28 @@ async def login(
         db.add(user)
         await db.flush()
 
+        # Check if preferred_off_id is already taken
+        res_taken = await db.execute(select(Officer).where(Officer.officer_id == preferred_off_id))
+        if res_taken.scalar_one_or_none():
+            res_all = await db.execute(select(Officer.officer_id))
+            all_ids = res_all.scalars().all()
+            max_num = 1000
+            for oid in all_ids:
+                if oid and oid.startswith("OFF-"):
+                    try:
+                        num = int(oid.split("-")[1])
+                        if num > max_num:
+                            max_num = num
+                    except (IndexError, ValueError):
+                        pass
+            assigned_off_id = f"OFF-{max_num + 1}"
+        else:
+            assigned_off_id = preferred_off_id
+
         officer = Officer(
-            officer_id="OFF-1001",
+            officer_id=assigned_off_id,
             user_id=user.id,
-            full_name="Field Officer",
+            full_name=def_name,
             email=clean_email,
             phone="+91 98220 00000",
             assigned_area="Central Ward",
@@ -164,13 +189,42 @@ async def login(
             detail="Account is disabled"
         )
 
-    # Fetch officer_id if field officer
+    # Fetch or ensure unique officer_id for field officer
     officer_id = None
     if user.role == "field_officer":
-        off_res = await db.execute(select(Officer).where(Officer.user_id == user.id))
+        off_res = await db.execute(select(Officer).where(or_(Officer.user_id == user.id, Officer.email == clean_email)))
         officer = off_res.scalar_one_or_none()
-        if officer:
-            officer_id = officer.officer_id
+        if not officer:
+            res_all = await db.execute(select(Officer.officer_id))
+            all_ids = res_all.scalars().all()
+            max_num = 1000
+            for oid in all_ids:
+                if oid and oid.startswith("OFF-"):
+                    try:
+                        num = int(oid.split("-")[1])
+                        if num > max_num:
+                            max_num = num
+                    except (IndexError, ValueError):
+                        pass
+            officer = Officer(
+                officer_id=f"OFF-{max_num + 1}",
+                user_id=user.id,
+                full_name=user.full_name,
+                email=clean_email,
+                phone=user.phone or "",
+                assigned_area="Central Ward",
+                target_collections_count=15,
+                target_collection_amount=30000.0,
+                current_latitude=21.1458,
+                current_longitude=79.0882,
+                current_location=point_wkt(79.0882, 21.1458),
+                is_active=True,
+                created_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            )
+            db.add(officer)
+            await db.commit()
+            await db.refresh(officer)
+        officer_id = officer.officer_id
 
     access_token = create_access_token(
         data={"sub": user.email, "role": user.role, "user_id": user.id}

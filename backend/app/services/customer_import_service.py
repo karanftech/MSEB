@@ -409,8 +409,6 @@ class CustomerImportService:
         CHUNK_SIZE = 100
 
         try:
-            cus_list = list(customers_to_upsert.values())
-
             # Determine identifier(s) for the current officer
             officer_filter_ids = set()
             if uploader_officer_id:
@@ -418,43 +416,73 @@ class CustomerImportService:
             if user_id_str:
                 officer_filter_ids.add(str(user_id_str))
 
-            if replace_all:
-                if officer_filter_ids:
-                    # Scope deletion to the specific officer credentials
-                    officer_cust_cond = or_(
-                        Customer.assigned_officer_id.in_(officer_filter_ids),
-                        Customer.uploaded_by_officer_id.in_(officer_filter_ids)
+            if not officer_filter_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Upload rejected: Unable to identify the target officer account."
+                )
+
+            # Check for customer_ids in this upload that belong to other officers.
+            # If any exist, namespace them with this officer's ID so Officer 2 never overrides Officer 1's records!
+            incoming_cust_ids = list(customers_to_upsert.keys())
+            other_officer_cust_ids = set()
+            for i in range(0, len(incoming_cust_ids), 500):
+                sub = incoming_cust_ids[i : i + 500]
+                chk = await db.execute(
+                    select(Customer.customer_id).where(
+                        and_(
+                            Customer.customer_id.in_(sub),
+                            ~Customer.uploaded_by_officer_id.in_(officer_filter_ids),
+                            ~Customer.assigned_officer_id.in_(officer_filter_ids)
+                        )
                     )
-                    del_count_stmt = select(func.count(Customer.id)).where(officer_cust_cond)
-                    del_res = await db.execute(del_count_stmt)
-                    deleted_count = del_res.scalar() or 0
+                )
+                for c_id in chk.scalars().all():
+                    other_officer_cust_ids.add(c_id)
 
-                    # Find customer_ids belonging to this officer so their meters are cleaned
-                    cust_ids_res = await db.execute(select(Customer.customer_id).where(officer_cust_cond))
-                    existing_officer_cust_ids = [r for r in cust_ids_res.scalars().all() if r]
+            if other_officer_cust_ids:
+                for c_id in other_officer_cust_ids:
+                    scoped_id = f"{uploader_officer_id or 'OFF'}_{c_id}"
+                    if c_id in customers_to_upsert:
+                        item = customers_to_upsert.pop(c_id)
+                        item["customer_id"] = scoped_id
+                        customers_to_upsert[scoped_id] = item
+                for m in meters_to_upsert:
+                    if m["customer_id"] in other_officer_cust_ids:
+                        m["customer_id"] = f"{uploader_officer_id or 'OFF'}_{m['customer_id']}"
 
-                    meter_or_conditions = [
-                        Meter.assigned_officer_id.in_(officer_filter_ids),
-                        Meter.uploaded_by_officer_id.in_(officer_filter_ids)
-                    ]
-                    if existing_officer_cust_ids:
-                        meter_or_conditions.append(Meter.customer_id.in_(existing_officer_cust_ids))
+            cus_list = list(customers_to_upsert.values())
 
-                    await db.execute(delete(Meter).where(or_(*meter_or_conditions)))
-                    await db.execute(delete(Customer).where(officer_cust_cond))
-                else:
-                    del_count_stmt = select(func.count(Customer.id))
-                    del_res = await db.execute(del_count_stmt)
-                    deleted_count = del_res.scalar() or 0
-                    await db.execute(delete(Meter))
-                    await db.execute(delete(Customer))
+            if replace_all:
+                # Strictly scope deletion to the specific officer credentials ONLY.
+                # Never perform an unconditional delete across all officers!
+                officer_cust_cond = or_(
+                    Customer.assigned_officer_id.in_(officer_filter_ids),
+                    Customer.uploaded_by_officer_id.in_(officer_filter_ids)
+                )
+                del_count_stmt = select(func.count(Customer.id)).where(officer_cust_cond)
+                del_res = await db.execute(del_count_stmt)
+                deleted_count = del_res.scalar() or 0
+
+                # Find customer_ids belonging to this officer so their meters are cleaned
+                cust_ids_res = await db.execute(select(Customer.customer_id).where(officer_cust_cond))
+                existing_officer_cust_ids = [r for r in cust_ids_res.scalars().all() if r]
+
+                meter_or_conditions = [
+                    Meter.assigned_officer_id.in_(officer_filter_ids),
+                    Meter.uploaded_by_officer_id.in_(officer_filter_ids)
+                ]
+                if existing_officer_cust_ids:
+                    meter_or_conditions.append(Meter.customer_id.in_(existing_officer_cust_ids))
+
+                await db.execute(delete(Meter).where(or_(*meter_or_conditions)))
+                await db.execute(delete(Customer).where(officer_cust_cond))
 
                 inserted_count = len(cus_list)
                 updated_count = 0
             else:
                 # In append mode, calculate existing vs new
                 existing_cust_ids = list(customers_to_upsert.keys())
-                # Chunk existing id checks if large
                 existing_in_db = set()
                 for i in range(0, len(existing_cust_ids), 500):
                     id_sub = existing_cust_ids[i : i + 500]
@@ -480,11 +508,19 @@ class CustomerImportService:
                 )
                 await db.execute(stmt)
 
-            # Sync meters for uploaded customers
+            # Sync meters for uploaded customers (scoped to this officer)
             for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
                 m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
                 cust_ids = [m['customer_id'] for m in m_chunk]
-                await db.execute(delete(Meter).where(Meter.customer_id.in_(cust_ids)))
+                await db.execute(delete(Meter).where(
+                    and_(
+                        Meter.customer_id.in_(cust_ids),
+                        or_(
+                            Meter.assigned_officer_id.in_(officer_filter_ids),
+                            Meter.uploaded_by_officer_id.in_(officer_filter_ids)
+                        )
+                    )
+                ))
                 await db.execute(pg_insert(Meter).values(m_chunk))
 
             await db.commit()
