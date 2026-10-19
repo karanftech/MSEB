@@ -322,9 +322,8 @@ export default function MapView({
           zoomDelta: 0.5, // Smooth button and key steps
           wheelPxPerZoomLevel: 90, // Ultra-smooth trackpad/mouse scroll handling
           wheelDebounceTime: 40,
-          bounceAtZoomLimits: true,
           rotate: true,
-          touchRotate: true, // Enables two-finger 360-degree rotation gesture on mobile (matches GisMap)
+          touchRotate: false, // Prevents leaflet-rotate from twisting during mobile pinch-zoom
           shiftKeyRotate: true,
           rotateControl: false,
           attributionControl: false,
@@ -343,7 +342,7 @@ export default function MapView({
         markerLayerGroupRef.current = markerGroup;
         routeLayerGroupRef.current = routeGroup;
 
-        // Sync bearing on live rotate & rotateend (from two-finger mobile rotation, compass, or presets)
+        // Sync bearing on live rotate & rotateend
         if (typeof (map as any).on === 'function') {
           map.on('rotate', () => {
             if (typeof (map as any).getBearing === 'function') {
@@ -387,8 +386,119 @@ export default function MapView({
           }
         });
 
-        // Desktop Shift+Drag or Alt+Drag smooth rotate controller
+        // ── Ultra-Smooth 2-Finger Touch Rotation & Desktop Rotate Controller ──
         const container = mapContainerRef.current;
+        let isTwoFingerGesture = false;
+        let isTwoFingerRotating = false;
+        let initialDistance = 0;
+        let initialAngle = 0;
+        let lastTouchAngle = 0;
+        let targetBearing = officerHeading || 0;
+        let currentRenderBearing = targetBearing;
+        let touchRafId: number | null = null;
+        let lastTouchUiSync = 0;
+
+        const calcTouchAngle = (t1: Touch, t2: Touch): number => {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.atan2(dy, dx) * (180 / Math.PI);
+        };
+
+        const calcTouchDist = (t1: Touch, t2: Touch): number => {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.hypot(dx, dy);
+        };
+
+        const stepRotation = () => {
+          let diff = targetBearing - currentRenderBearing;
+          if (diff > 180) diff -= 360;
+          if (diff < -180) diff += 360;
+
+          if (!isTwoFingerRotating && Math.abs(diff) < 0.2) {
+            currentRenderBearing = targetBearing;
+            if (typeof map.setBearing === 'function') {
+              map.setBearing(currentRenderBearing);
+            }
+            touchRafId = null;
+            return;
+          }
+
+          currentRenderBearing = (currentRenderBearing + diff * 0.42 + 360) % 360;
+          if (typeof map.setBearing === 'function') {
+            map.setBearing(currentRenderBearing);
+          }
+
+          touchRafId = requestAnimationFrame(stepRotation);
+        };
+
+        const handleTouchStart = (e: TouchEvent) => {
+          if (e.touches.length === 2) {
+            isTwoFingerGesture = true;
+            isTwoFingerRotating = false;
+            initialDistance = calcTouchDist(e.touches[0], e.touches[1]);
+            initialAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            lastTouchAngle = initialAngle;
+            const liveBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
+            targetBearing = liveBearing;
+            currentRenderBearing = liveBearing;
+          } else {
+            isTwoFingerGesture = false;
+            isTwoFingerRotating = false;
+          }
+        };
+
+        const handleTouchMove = (e: TouchEvent) => {
+          if (isTwoFingerGesture && e.touches.length === 2) {
+            const currentDist = calcTouchDist(e.touches[0], e.touches[1]);
+            const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            let totalAngleDelta = Math.abs(currentAngle - initialAngle);
+            if (totalAngleDelta > 180) totalAngleDelta = 360 - totalAngleDelta;
+            const distChange = Math.abs(currentDist - initialDistance);
+
+            // If user is pinch-zooming (finger distance changing), do NOT rotate! Keep pinch-zoom 100% clean!
+            if (!isTwoFingerRotating && distChange > 16) {
+              return;
+            }
+
+            // Only activate intentional two-finger twist rotation when angle changes significantly without pinch
+            if (!isTwoFingerRotating && totalAngleDelta > 14 && distChange < 20) {
+              isTwoFingerRotating = true;
+            }
+
+            if (isTwoFingerRotating) {
+              let delta = currentAngle - lastTouchAngle;
+              if (delta > 180) delta -= 360;
+              if (delta < -180) delta += 360;
+              lastTouchAngle = currentAngle;
+
+              targetBearing = (targetBearing + delta + 360) % 360;
+
+              if (!touchRafId) {
+                touchRafId = requestAnimationFrame(stepRotation);
+              }
+
+              const now = performance.now();
+              if (now - lastTouchUiSync > 80) {
+                lastTouchUiSync = now;
+                setCurrentBearing(Math.round(targetBearing));
+              }
+            }
+          }
+        };
+
+        const handleTouchEnd = (e: TouchEvent) => {
+          if (e.touches.length < 2) {
+            if (isTwoFingerRotating) {
+              isTwoFingerRotating = false;
+              const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : targetBearing;
+              setCurrentBearing(Math.round(finalBearing));
+            }
+            isTwoFingerGesture = false;
+          }
+        };
+
+        // Desktop Shift+Drag or Alt+Drag smooth rotate
         let isShiftDragging = false;
         let lastShiftX = 0;
         let shiftTargetBearing = 0;
@@ -456,11 +566,19 @@ export default function MapView({
         };
 
         if (container) {
+          container.addEventListener('touchstart', handleTouchStart, { passive: true });
+          container.addEventListener('touchmove', handleTouchMove, { passive: true });
+          container.addEventListener('touchend', handleTouchEnd, { passive: true });
+          container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
           container.addEventListener('mousedown', handleMouseDown);
           window.addEventListener('mousemove', handleMouseMove);
           window.addEventListener('mouseup', handleMouseUp);
 
           cleanUpTouchListeners = () => {
+            container.removeEventListener('touchstart', handleTouchStart);
+            container.removeEventListener('touchmove', handleTouchMove);
+            container.removeEventListener('touchend', handleTouchEnd);
+            container.removeEventListener('touchcancel', handleTouchEnd);
             container.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
