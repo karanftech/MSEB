@@ -12,7 +12,6 @@ interface BulkUploadModalProps {
 
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [replaceAll, setReplaceAll] = useState<boolean>(true);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadResult, setUploadResult] = useState<{
     total_processed: number;
@@ -69,7 +68,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setErrorMessage(null);
 
     try {
-      const res = await customerService.uploadCustomers(selectedFile, replaceAll);
+      const res = await customerService.uploadCustomers(selectedFile, true);
       setUploadResult(res);
       window.dispatchEvent(new Event('customers-updated'));
       onSuccess();
@@ -154,32 +153,6 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             </p>
           </div>
 
-          {/* Database Replace Mode Toggle */}
-          {!uploadResult && (
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 flex items-center justify-between">
-              <label className="flex items-center gap-3 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={replaceAll}
-                  onChange={(e) => setReplaceAll(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
-                />
-                <div>
-                  <span className="text-xs font-bold text-slate-800">Override my previously uploaded records</span>
-                  <span className="text-[11px] text-slate-500 block">
-                    {replaceAll
-                      ? 'Replaces only your previous records with the new upload. Other officers’ data remains completely untouched.'
-                      : 'Keep existing records and update matching consumer IDs (additive import).'}
-                  </span>
-                </div>
-              </label>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
-                replaceAll ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-slate-200 text-slate-600'
-              }`}>
-                {replaceAll ? 'Replace Mode' : 'Append Mode'}
-              </span>
-            </div>
-          )}
 
           {/* Upload Drop Zone */}
           {!uploadResult && (
