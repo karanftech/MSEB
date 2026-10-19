@@ -12,6 +12,7 @@ import {
 import MapControls from '@/components/map/MapControls';
 import NavigationPanel from '@/components/map/NavigationPanel';
 import { speakInstruction, stopSpeech } from '@/utils/speech';
+import { Compass } from 'lucide-react';
 
 interface MapViewProps {
   customers: Customer[];
@@ -282,10 +283,11 @@ export default function MapView({
 
         // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
         const container = mapContainerRef.current;
+        let isTwoFingerGesture = false;
         let isTwoFingerRotating = false;
-        let hasRotatedPastThreshold = false;
+        let initialDistance = 0;
+        let initialAngle = 0;
         let lastTouchAngle = 0;
-        let accumulatedDiff = 0;
         let targetBearing = officerHeading || 0;
         let currentRenderBearing = targetBearing;
         let touchRafId: number | null = null;
@@ -295,6 +297,12 @@ export default function MapView({
           const dx = t2.clientX - t1.clientX;
           const dy = t2.clientY - t1.clientY;
           return Math.atan2(dy, dx) * (180 / Math.PI);
+        };
+
+        const calcTouchDist = (t1: Touch, t2: Touch): number => {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.hypot(dx, dy);
         };
 
         const stepRotation = () => {
@@ -323,39 +331,39 @@ export default function MapView({
 
         const handleTouchStart = (e: TouchEvent) => {
           if (e.touches.length === 2) {
-            isTwoFingerRotating = true;
-            hasRotatedPastThreshold = false;
-            accumulatedDiff = 0;
-            lastTouchAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            isTwoFingerGesture = true;
+            isTwoFingerRotating = false;
+            initialDistance = calcTouchDist(e.touches[0], e.touches[1]);
+            initialAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            lastTouchAngle = initialAngle;
             const liveBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
             targetBearing = liveBearing;
             currentRenderBearing = liveBearing;
           } else {
+            isTwoFingerGesture = false;
             isTwoFingerRotating = false;
-            hasRotatedPastThreshold = false;
           }
         };
 
         const handleTouchMove = (e: TouchEvent) => {
-          if (isTwoFingerRotating && e.touches.length === 2) {
-            // Prevent default browser viewport zoom/pan gesture conflict
-            if (e.cancelable) {
-              e.preventDefault();
+          if (isTwoFingerGesture && e.touches.length === 2) {
+            const currentDist = calcTouchDist(e.touches[0], e.touches[1]);
+            const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+
+            let totalAngleDelta = Math.abs(currentAngle - initialAngle);
+            if (totalAngleDelta > 180) totalAngleDelta = 360 - totalAngleDelta;
+            const distChange = Math.abs(currentDist - initialDistance);
+
+            // If user is pinch-zooming (finger distance changing), do NOT hijack rotation!
+            // Let Leaflet touchZoom handle zoom smoothly and naturally.
+            if (!isTwoFingerRotating && distChange > 16) {
+              return;
             }
 
-            const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
-            let delta = currentAngle - lastTouchAngle;
-
-            // Normalize delta to [-180, 180] degrees (eliminates any 180/-180 wrap-around jump)
-            if (delta > 180) delta -= 360;
-            if (delta < -180) delta += 360;
-            lastTouchAngle = currentAngle;
-
-            // Small 1.5° deadzone: distinguishes intentional rotation from accidental pinch tremor
-            if (!hasRotatedPastThreshold) {
-              accumulatedDiff += delta;
-              if (Math.abs(accumulatedDiff) >= 1.5) {
-                hasRotatedPastThreshold = true;
+            // Only activate intentional two-finger twist rotation when angle changes significantly
+            if (!isTwoFingerRotating) {
+              if (totalAngleDelta > 12 && (totalAngleDelta > distChange * 0.2 || distChange < 25)) {
+                isTwoFingerRotating = true;
                 if (map.dragging && map.dragging.enabled()) {
                   map.dragging.disable();
                 }
@@ -364,18 +372,29 @@ export default function MapView({
               }
             }
 
-            // Invert delta so clockwise finger twist rotates view clockwise
-            targetBearing = (targetBearing - delta + 360) % 360;
+            if (isTwoFingerRotating) {
+              if (e.cancelable) {
+                e.preventDefault();
+              }
 
-            if (!touchRafId) {
-              touchRafId = requestAnimationFrame(stepRotation);
-            }
+              let delta = currentAngle - lastTouchAngle;
+              if (delta > 180) delta -= 360;
+              if (delta < -180) delta += 360;
+              lastTouchAngle = currentAngle;
 
-            // Throttle React state updates to 100ms so UI never lags
-            const now = performance.now();
-            if (now - lastTouchUiSync > 100) {
-              lastTouchUiSync = now;
-              setCurrentBearing(targetBearing);
+              // Clockwise finger twist increases bearing (rotates right)
+              targetBearing = (targetBearing + delta + 360) % 360;
+
+              if (!touchRafId) {
+                touchRafId = requestAnimationFrame(stepRotation);
+              }
+
+              // Throttle React state updates to 100ms
+              const now = performance.now();
+              if (now - lastTouchUiSync > 100) {
+                lastTouchUiSync = now;
+                setCurrentBearing(Math.round(targetBearing));
+              }
             }
           }
         };
@@ -384,13 +403,21 @@ export default function MapView({
           if (e.touches.length < 2) {
             if (isTwoFingerRotating) {
               isTwoFingerRotating = false;
-              hasRotatedPastThreshold = false;
               if (map.dragging && !map.dragging.enabled()) {
                 map.dragging.enable();
               }
-              const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : targetBearing;
-              setCurrentBearing(finalBearing);
+              let finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : targetBearing;
+              // Snap to North if near 0° or 360° within 4 degrees
+              if (finalBearing < 4 || finalBearing > 356) {
+                finalBearing = 0;
+                targetBearing = 0;
+                if (typeof map.setBearing === 'function') {
+                  map.setBearing(0);
+                }
+              }
+              setCurrentBearing(Math.round(finalBearing));
             }
+            isTwoFingerGesture = false;
           }
         };
 
@@ -781,6 +808,21 @@ export default function MapView({
 
       {/* Floating 360° Compass & Map Controls */}
       <div className="absolute right-4 bottom-6 z-20 flex flex-col items-end gap-2">
+        {/* Quick Reset North Compass Button: automatically appears whenever the map is rotated */}
+        {Math.round(currentBearing || 0) % 360 !== 0 && (
+          <button
+            type="button"
+            onClick={handleResetNorth}
+            className="w-10 h-10 rounded-full bg-white/95 text-slate-800 border border-slate-200/90 shadow-xl flex items-center justify-center transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer animate-in fade-in zoom-in-90"
+            title={`Reset to True North (Current: ${Math.round(currentBearing)}°)`}
+          >
+            <Compass
+              className="w-5 h-5 text-red-500 transition-transform duration-100 ease-out"
+              style={{ transform: `rotate(${-(currentBearing || 0)}deg)` }}
+            />
+          </button>
+        )}
+
         <MapControls
           currentLayer={currentLayer}
           isFollowing={isFollowing}

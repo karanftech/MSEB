@@ -222,3 +222,8 @@
   transition: none !important;
 }
 
+/* Hide default leaflet-rotate control so it never overlaps header or search bar */
+.leaflet-control-rotate {
+  display: none !important;
+}
+
