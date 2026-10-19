@@ -322,9 +322,8 @@ export default function MapView({
           zoomDelta: 0.5, // Smooth button and key steps
           wheelPxPerZoomLevel: 90, // Ultra-smooth trackpad/mouse scroll handling
           wheelDebounceTime: 40,
-          bounceAtZoomLimits: true,
           rotate: true,
-          touchRotate: true,
+          touchRotate: false, // Prevents leaflet-rotate from twisting during mobile pinch-zoom
           shiftKeyRotate: true,
           rotateControl: false,
           attributionControl: false,
@@ -457,8 +456,13 @@ export default function MapView({
             if (totalAngleDelta > 180) totalAngleDelta = 360 - totalAngleDelta;
             const distChange = Math.abs(currentDist - initialDistance);
 
-            // Activate rotation when twisting gesture detected (avoids interfering with pure pinch zoom)
-            if (!isTwoFingerRotating && totalAngleDelta > 5 && totalAngleDelta > distChange * 0.12) {
+            // If user is pinch-zooming (finger distance changing), do NOT rotate! Keep pinch-zoom 100% clean!
+            if (!isTwoFingerRotating && distChange > 16) {
+              return;
+            }
+
+            // Only activate intentional two-finger twist rotation when angle changes significantly without pinch
+            if (!isTwoFingerRotating && totalAngleDelta > 14 && distChange < 20) {
               isTwoFingerRotating = true;
             }
 
@@ -881,8 +885,6 @@ export default function MapView({
     const routeGroup = routeLayerGroupRef.current;
     if (!map || !L || !routeGroup) return;
 
-    routeGroup.clearLayers();
-
     const activePath = multiRoute?.coordinates_path?.length
       ? multiRoute.coordinates_path
       : route?.coordinates_path?.length
@@ -890,11 +892,21 @@ export default function MapView({
       : null;
 
     if (!activePath || activePath.length < 2) {
+      routeGroup.clearLayers();
       lastDrawnRouteKeyRef.current = '';
       return;
     }
 
     const routeKey = `${activePath.length}_${activePath[0]?.latitude.toFixed(5)}_${activePath[activePath.length - 1]?.latitude.toFixed(5)}`;
+
+    // If identical route is already rendered, never clear or re-render during map zoom, pan, or geolocation updates
+    if (lastDrawnRouteKeyRef.current === routeKey && routeGroup.getLayers().length > 0) {
+      return;
+    }
+
+    lastDrawnRouteKeyRef.current = routeKey;
+    routeGroup.clearLayers();
+
     const latLngs: [number, number][] = activePath.map((p) => [p.latitude, p.longitude]);
 
     // Outer route casing (Google Maps style dark blue track border)
@@ -915,10 +927,9 @@ export default function MapView({
       lineJoin: 'round',
     }).addTo(routeGroup);
 
-    // Auto-fit bounds ONLY once when a new route is received, never during rotation or zooming
-    if (latLngs.length > 0 && routeKey !== lastDrawnRouteKeyRef.current) {
+    // Auto-fit bounds ONLY once when a new route is received
+    if (latLngs.length > 0) {
       map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
-      lastDrawnRouteKeyRef.current = routeKey;
     }
   }, [mapReady, route, multiRoute]);
 
