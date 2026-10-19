@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, or_, func
+from sqlalchemy import select, delete, or_, and_, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from fastapi import UploadFile, HTTPException
 

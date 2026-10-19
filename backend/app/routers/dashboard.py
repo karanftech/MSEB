@@ -38,6 +38,8 @@ async def get_officer_dashboard(
         officer_id = officer_ctx["officer_id"]
         filter_ids = list(officer_ctx["filter_ids"])
 
+        lat_rounded = round(latitude or 21.1458, 3)
+        lng_rounded = round(longitude or 79.0882, 3)
         cache_key = f"dashboard:officer:{officer_id}:{lat_rounded}:{lng_rounded}"
 
         cached_metrics = await cache_service.get(cache_key)
