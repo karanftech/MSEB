@@ -183,8 +183,8 @@ export default function MapView({
   const tileLayerRef = useRef<any>(null);
   const officerMarkerRef = useRef<any>(null);
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
-  const routePolylineCasingRef = useRef<any>(null);
-  const routePolylineRef = useRef<any>(null);
+  const routeLayerGroupRef = useRef<any>(null);
+  const markerLayerGroupRef = useRef<any>(null);
   const lastDrawnRouteKeyRef = useRef<string>('');
   const LRef = useRef<any>(null);
 
@@ -193,6 +193,8 @@ export default function MapView({
   const [markerStyle, setMarkerStyle] = useState<'dot' | 'pin'>('dot');
   const [isFollowingInternal, setIsFollowingInternal] = useState<boolean>(false);
   const [currentBearing, setCurrentBearing] = useState<number>(officerHeading || 0);
+  const [showRotationControls, setShowRotationControls] = useState<boolean>(false);
+  const [deviceHeading, setDeviceHeading] = useState<number | null>(null);
   const [isMutedInternal, setIsMutedInternal] = useState<boolean>(false);
 
   const isMuted = isMutedProp !== undefined ? isMutedProp : isMutedInternal;
@@ -262,7 +264,22 @@ export default function MapView({
     }
   };
 
-  // ── 1. Initialize Leaflet 1.9.4 + Leaflet-Rotate 0.2.8 with 2-Finger Touch Rotation ─
+  // Listen to mobile device orientation for real compass heading
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.DeviceOrientationEvent) return;
+    const handleOrientation = (e: any) => {
+      const heading = e.webkitCompassHeading ?? (e.alpha != null ? (360 - e.alpha) % 360 : null);
+      if (heading != null && !isNaN(heading)) {
+        setDeviceHeading(Math.round(heading));
+      }
+    };
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    return () => {
+      window.removeEventListener('deviceorientation', handleOrientation, true);
+    };
+  }, []);
+
+  // ── 1. Initialize Leaflet 1.9.4 + Leaflet-Rotate 0.2.8 with Smooth Tile Zoom & Active Rotation ─
   useEffect(() => {
     if (typeof window === 'undefined' || !mapContainerRef.current) return;
     let isMounted = true;
@@ -291,34 +308,57 @@ export default function MapView({
         const defaultLat = officerCoords?.latitude ?? 21.1458;
         const defaultLng = officerCoords?.longitude ?? 79.0882;
 
-        // Initialize Leaflet map with 360° rotation enabled
-        const map = (L as any).map(mapContainerRef.current, {
+        // Initialize Leaflet map with smooth fractional zoom parameters (matches GisMap)
+        const mapOptions: any = {
           center: [defaultLat, defaultLng],
           zoom: 16,
-          rotate: true,
-          bearing: officerHeading || 0,
-          touchRotate: false, // Managed by our high-performance RAF gesture controller
+          zoomControl: false,
+          scrollWheelZoom: true,
           touchZoom: true,
+          doubleClickZoom: true,
+          boxZoom: true,
+          keyboard: true,
+          zoomSnap: 0.25, // Smooth fractional zoom
+          zoomDelta: 0.5, // Smooth button and key steps
+          wheelPxPerZoomLevel: 90, // Ultra-smooth trackpad/mouse scroll handling
+          wheelDebounceTime: 40,
+          bounceAtZoomLimits: true,
+          rotate: true,
+          touchRotate: true,
           shiftKeyRotate: true,
           rotateControl: false,
-          zoomControl: false,
           attributionControl: false,
-        });
+          bearing: officerHeading || 0,
+        };
+
+        const map = (L as any).map(mapContainerRef.current, mapOptions);
 
         // Set tile layer
         const layerConfig = TILE_LAYERS['roadmap'];
         tileLayerRef.current = L.tileLayer(layerConfig.url, layerConfig.options).addTo(map);
 
-        // Sync bearing on rotateend to avoid thrashing React state on every frame
-        map.on('rotateend', () => {
-          const bearing = typeof (map as any).getBearing === 'function' ? (map as any).getBearing() : 0;
-          setCurrentBearing(bearing);
-        });
+        // Dedicated layer groups for markers and route polylines
+        const markerGroup = L.layerGroup().addTo(map);
+        const routeGroup = L.layerGroup().addTo(map);
+        markerLayerGroupRef.current = markerGroup;
+        routeLayerGroupRef.current = routeGroup;
 
-        map.on('dragstart', () => {
-          if (onDisableFollow) onDisableFollow();
-          setIsFollowingInternal(false);
-        });
+        // Sync bearing on live rotate & rotateend
+        if (typeof (map as any).on === 'function') {
+          map.on('rotate', () => {
+            if (typeof (map as any).getBearing === 'function') {
+              setCurrentBearing(Math.round((map as any).getBearing()));
+            }
+          });
+          map.on('rotateend', () => {
+            const bearing = typeof (map as any).getBearing === 'function' ? (map as any).getBearing() : 0;
+            setCurrentBearing(Math.round(bearing));
+          });
+          map.on('dragstart', () => {
+            if (onDisableFollow) onDisableFollow();
+            setIsFollowingInternal(false);
+          });
+        }
 
         // Direct Leaflet map event binding for Collect Payment popup button
         map.on('popupopen', (e: any) => {
@@ -347,12 +387,13 @@ export default function MapView({
           }
         });
 
-        // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
+        // ── Ultra-Smooth 2-Finger Touch Rotation & Desktop Rotate Controller ──
         const container = mapContainerRef.current;
+        let isTwoFingerGesture = false;
         let isTwoFingerRotating = false;
-        let hasRotatedPastThreshold = false;
+        let initialDistance = 0;
+        let initialAngle = 0;
         let lastTouchAngle = 0;
-        let accumulatedDiff = 0;
         let targetBearing = officerHeading || 0;
         let currentRenderBearing = targetBearing;
         let touchRafId: number | null = null;
@@ -364,12 +405,17 @@ export default function MapView({
           return Math.atan2(dy, dx) * (180 / Math.PI);
         };
 
+        const calcTouchDist = (t1: Touch, t2: Touch): number => {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.hypot(dx, dy);
+        };
+
         const stepRotation = () => {
           let diff = targetBearing - currentRenderBearing;
           if (diff > 180) diff -= 360;
           if (diff < -180) diff += 360;
 
-          // If almost reached target and fingers lifted, snap and complete
           if (!isTwoFingerRotating && Math.abs(diff) < 0.2) {
             currentRenderBearing = targetBearing;
             if (typeof map.setBearing === 'function') {
@@ -379,7 +425,6 @@ export default function MapView({
             return;
           }
 
-          // LERP damping factor (0.42) produces continuous, fluid rotation without jitter
           currentRenderBearing = (currentRenderBearing + diff * 0.42 + 360) % 360;
           if (typeof map.setBearing === 'function') {
             map.setBearing(currentRenderBearing);
@@ -390,59 +435,50 @@ export default function MapView({
 
         const handleTouchStart = (e: TouchEvent) => {
           if (e.touches.length === 2) {
-            isTwoFingerRotating = true;
-            hasRotatedPastThreshold = false;
-            accumulatedDiff = 0;
-            lastTouchAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            isTwoFingerGesture = true;
+            isTwoFingerRotating = false;
+            initialDistance = calcTouchDist(e.touches[0], e.touches[1]);
+            initialAngle = calcTouchAngle(e.touches[0], e.touches[1]);
+            lastTouchAngle = initialAngle;
             const liveBearing = typeof map.getBearing === 'function' ? map.getBearing() : 0;
             targetBearing = liveBearing;
             currentRenderBearing = liveBearing;
           } else {
+            isTwoFingerGesture = false;
             isTwoFingerRotating = false;
-            hasRotatedPastThreshold = false;
           }
         };
 
         const handleTouchMove = (e: TouchEvent) => {
-          if (isTwoFingerRotating && e.touches.length === 2) {
-            // Prevent default browser viewport zoom/pan gesture conflict
-            if (e.cancelable) {
-              e.preventDefault();
-            }
-
+          if (isTwoFingerGesture && e.touches.length === 2) {
+            const currentDist = calcTouchDist(e.touches[0], e.touches[1]);
             const currentAngle = calcTouchAngle(e.touches[0], e.touches[1]);
-            let delta = currentAngle - lastTouchAngle;
+            let totalAngleDelta = Math.abs(currentAngle - initialAngle);
+            if (totalAngleDelta > 180) totalAngleDelta = 360 - totalAngleDelta;
+            const distChange = Math.abs(currentDist - initialDistance);
 
-            // Normalize delta to [-180, 180] degrees (eliminates any 180/-180 wrap-around jump)
-            if (delta > 180) delta -= 360;
-            if (delta < -180) delta += 360;
-            lastTouchAngle = currentAngle;
+            // Activate rotation when twisting gesture detected (avoids interfering with pure pinch zoom)
+            if (!isTwoFingerRotating && totalAngleDelta > 5 && totalAngleDelta > distChange * 0.12) {
+              isTwoFingerRotating = true;
+            }
 
-            // Small 1.5° deadzone: distinguishes intentional rotation from accidental pinch tremor
-            if (!hasRotatedPastThreshold) {
-              accumulatedDiff += delta;
-              if (Math.abs(accumulatedDiff) >= 1.5) {
-                hasRotatedPastThreshold = true;
-                if (map.dragging && map.dragging.enabled()) {
-                  map.dragging.disable();
-                }
-              } else {
-                return;
+            if (isTwoFingerRotating) {
+              let delta = currentAngle - lastTouchAngle;
+              if (delta > 180) delta -= 360;
+              if (delta < -180) delta += 360;
+              lastTouchAngle = currentAngle;
+
+              targetBearing = (targetBearing + delta + 360) % 360;
+
+              if (!touchRafId) {
+                touchRafId = requestAnimationFrame(stepRotation);
               }
-            }
 
-            // Rotate clockwise when fingers move/twist to the right
-            targetBearing = (targetBearing + delta + 360) % 360;
-
-            if (!touchRafId) {
-              touchRafId = requestAnimationFrame(stepRotation);
-            }
-
-            // Throttle React state updates to 100ms so UI never lags
-            const now = performance.now();
-            if (now - lastTouchUiSync > 100) {
-              lastTouchUiSync = now;
-              setCurrentBearing(targetBearing);
+              const now = performance.now();
+              if (now - lastTouchUiSync > 80) {
+                lastTouchUiSync = now;
+                setCurrentBearing(Math.round(targetBearing));
+              }
             }
           }
         };
@@ -451,13 +487,10 @@ export default function MapView({
           if (e.touches.length < 2) {
             if (isTwoFingerRotating) {
               isTwoFingerRotating = false;
-              hasRotatedPastThreshold = false;
-              if (map.dragging && !map.dragging.enabled()) {
-                map.dragging.enable();
-              }
               const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : targetBearing;
-              setCurrentBearing(finalBearing);
+              setCurrentBearing(Math.round(finalBearing));
             }
+            isTwoFingerGesture = false;
           }
         };
 
@@ -513,9 +546,9 @@ export default function MapView({
             }
 
             const now = performance.now();
-            if (now - lastShiftUiSync > 100) {
+            if (now - lastShiftUiSync > 80) {
               lastShiftUiSync = now;
-              setCurrentBearing(shiftTargetBearing);
+              setCurrentBearing(Math.round(shiftTargetBearing));
             }
           }
         };
@@ -524,13 +557,13 @@ export default function MapView({
           if (isShiftDragging) {
             isShiftDragging = false;
             const finalBearing = typeof map.getBearing === 'function' ? map.getBearing() : shiftTargetBearing;
-            setCurrentBearing(finalBearing);
+            setCurrentBearing(Math.round(finalBearing));
           }
         };
 
         if (container) {
           container.addEventListener('touchstart', handleTouchStart, { passive: true });
-          container.addEventListener('touchmove', handleTouchMove, { passive: false });
+          container.addEventListener('touchmove', handleTouchMove, { passive: true });
           container.addEventListener('touchend', handleTouchEnd, { passive: true });
           container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
           container.addEventListener('mousedown', handleMouseDown);
@@ -548,6 +581,11 @@ export default function MapView({
           };
         }
 
+        // Immediate size invalidation to avoid gray tiles or bounds clipping
+        setTimeout(() => {
+          map.invalidateSize();
+        }, 100);
+
         leafletMapRef.current = map;
         setMapReady(true);
       } catch (err) {
@@ -560,12 +598,36 @@ export default function MapView({
     return () => {
       isMounted = false;
       if (cleanUpTouchListeners) cleanUpTouchListeners();
+      if (routeLayerGroupRef.current) {
+        routeLayerGroupRef.current.clearLayers();
+        routeLayerGroupRef.current = null;
+      }
+      if (markerLayerGroupRef.current) {
+        markerLayerGroupRef.current.clearLayers();
+        markerLayerGroupRef.current = null;
+      }
       if (leafletMapRef.current) {
         leafletMapRef.current.remove();
         leafletMapRef.current = null;
       }
     };
   }, []);
+
+  // ResizeObserver to eliminate gray tiles and keep vector bounds synchronized
+  useEffect(() => {
+    if (!mapReady || !leafletMapRef.current || !mapContainerRef.current) return;
+    const map = leafletMapRef.current;
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    resizeObserver.observe(mapContainerRef.current);
+    const onResize = () => map.invalidateSize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', onResize);
+    };
+  }, [mapReady]);
 
   // ── 2. Handle Layer Switching ────────────────────────────────────────────────
   const handleSelectLayer = (layer: MapLayerType) => {
@@ -582,7 +644,16 @@ export default function MapView({
     tileLayerRef.current = L.tileLayer(cfg.url, cfg.options).addTo(map);
   };
 
-  // ── 3. Reset North (0° Bearing) ──────────────────────────────────────────────
+  // ── 3. Reset North & Orientation Bearing Helpers (matches GisMap) ───────────
+  const handleSetBearing = (deg: number) => {
+    const normalized = ((deg % 360) + 360) % 360;
+    const map = leafletMapRef.current;
+    if (map && typeof (map as any).setBearing === 'function') {
+      map.setBearing(normalized);
+    }
+    setCurrentBearing(Math.round(normalized));
+  };
+
   const handleResetNorth = () => {
     const map = leafletMapRef.current;
     if (!map) return;
@@ -597,6 +668,10 @@ export default function MapView({
         pane?.classList.remove('leaflet-rotating-smooth');
       }, 400);
     }
+  };
+
+  const handleRotateRelative = (delta: number) => {
+    handleSetBearing(currentBearing + delta);
   };
 
   // ── 4. Zoom Controls ─────────────────────────────────────────────────────────
@@ -658,6 +733,7 @@ export default function MapView({
   useEffect(() => {
     const L = LRef.current;
     const map = leafletMapRef.current;
+    const markerGroup = markerLayerGroupRef.current;
     if (!map || !L) return;
 
     const currentIds = new Set(customers.map((c) => c.customer_id));
@@ -665,7 +741,11 @@ export default function MapView({
     // Remove stale markers
     customerMarkersRef.current.forEach((marker, id) => {
       if (!currentIds.has(id)) {
-        map.removeLayer(marker);
+        if (markerGroup) {
+          markerGroup.removeLayer(marker);
+        } else {
+          map.removeLayer(marker);
+        }
         customerMarkersRef.current.delete(id);
       }
     });
@@ -757,7 +837,7 @@ export default function MapView({
           }
         }, 0);
       } else {
-        marker = L.marker(pos, { icon, zIndexOffset: isSelected || isCurrentStop ? 1000 : 100 }).addTo(map);
+        marker = L.marker(pos, { icon, zIndexOffset: isSelected || isCurrentStop ? 1000 : 100 }).addTo(markerGroup || map);
 
         const popup = L.popup({
           offset: isDot ? [0, -14] : [0, -32],
@@ -794,11 +874,14 @@ export default function MapView({
     });
   }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment, markerStyle]);
 
-  // ── 8. Draw OSRM Polyline Routes on Leaflet (Flicker-Free & Glitch-Free) ─────
+  // ── 8. Draw OSRM Polyline Routes on Leaflet (Zero-Displacement with Isolated LayerGroup) ─────
   useEffect(() => {
     const L = LRef.current;
     const map = leafletMapRef.current;
-    if (!map || !L) return;
+    const routeGroup = routeLayerGroupRef.current;
+    if (!map || !L || !routeGroup) return;
+
+    routeGroup.clearLayers();
 
     const activePath = multiRoute?.coordinates_path?.length
       ? multiRoute.coordinates_path
@@ -807,67 +890,149 @@ export default function MapView({
       : null;
 
     if (!activePath || activePath.length < 2) {
-      if (routePolylineCasingRef.current) {
-        map.removeLayer(routePolylineCasingRef.current);
-        routePolylineCasingRef.current = null;
-      }
-      if (routePolylineRef.current) {
-        map.removeLayer(routePolylineRef.current);
-        routePolylineRef.current = null;
-      }
       lastDrawnRouteKeyRef.current = '';
       return;
     }
 
     const routeKey = `${activePath.length}_${activePath[0]?.latitude.toFixed(5)}_${activePath[activePath.length - 1]?.latitude.toFixed(5)}`;
-    const latLngs = activePath.map((p) => [p.latitude, p.longitude]);
+    const latLngs: [number, number][] = activePath.map((p) => [p.latitude, p.longitude]);
 
-    // If the exact same route is already rendered, do nothing (never delete/recreate during rotation)
-    if (routePolylineRef.current && routePolylineCasingRef.current && routeKey === lastDrawnRouteKeyRef.current) {
-      return;
-    }
+    // Outer route casing (Google Maps style dark blue track border)
+    L.polyline(latLngs, {
+      color: '#0284c7',
+      weight: 8,
+      opacity: 0.45,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(routeGroup);
 
-    const isNewRoute = routeKey !== lastDrawnRouteKeyRef.current;
-    lastDrawnRouteKeyRef.current = routeKey;
+    // Inner vibrant blue route line
+    const polyline = L.polyline(latLngs, {
+      color: '#38bdf8',
+      weight: 4.5,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(routeGroup);
 
-    if (routePolylineRef.current && routePolylineCasingRef.current) {
-      // Update coordinates on existing SVG layers without DOM teardown
-      routePolylineCasingRef.current.setLatLngs(latLngs);
-      routePolylineRef.current.setLatLngs(latLngs);
-    } else {
-      // Create new polyline layers if not existing
-      routePolylineCasingRef.current = L.polyline(latLngs, {
-        color: '#0284c7',
-        weight: 8,
-        opacity: 0.45,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
-
-      routePolylineRef.current = L.polyline(latLngs, {
-        color: '#38bdf8',
-        weight: 4.5,
-        opacity: 0.95,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
-    }
-
-    // Auto-fit bounds ONLY once when a new route is received, never during rotation or dragging
-    if (isNewRoute) {
-      map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50] });
+    // Auto-fit bounds ONLY once when a new route is received, never during rotation or zooming
+    if (latLngs.length > 0 && routeKey !== lastDrawnRouteKeyRef.current) {
+      map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+      lastDrawnRouteKeyRef.current = routeKey;
     }
   }, [mapReady, route, multiRoute]);
 
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden bg-slate-950">
-      {/* Leaflet Map Canvas with 360° Two-Finger Rotation */}
+      {/* Leaflet Map Canvas with 360° Two-Finger Rotation & Crisp Zoom */}
       <div
         ref={mapContainerRef}
         className="w-full h-full z-0 outline-none select-none"
-        style={{ touchAction: 'none' }}
         tabIndex={0}
       />
+
+      {/* 360° Compass & Rotation Drawer Toggle (Top-Right, matching GisMap) */}
+      <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-1.5">
+        <button
+          type="button"
+          onClick={() => setShowRotationControls((prev) => !prev)}
+          className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200/80 bg-white/95 backdrop-blur-md text-xs font-bold text-slate-800 hover:bg-slate-50 transition active:scale-95 shadow-lg ${
+            currentBearing !== 0 ? 'ring-2 ring-red-400/60' : ''
+          }`}
+          title={
+            currentBearing !== 0
+              ? `Bearing: ${currentBearing}° - Tap to adjust orientation`
+              : '360° Map Rotation - Tap to adjust orientation'
+          }
+        >
+          {/* Rotating Compass Needle (Red North, Silver South) */}
+          <div
+            style={{ transform: `rotate(${-currentBearing}deg)` }}
+            className="transition-transform duration-100 flex flex-col items-center justify-center h-5 w-5"
+          >
+            <svg width="10" height="18" viewBox="0 0 10 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polygon points="5,1 9,9 5,7 1,9" fill="#ef4444" />
+              <polygon points="5,17 9,9 5,7 1,9" fill="#94a3b8" />
+            </svg>
+          </div>
+        </button>
+
+        {/* Bearing degree badge when rotated */}
+        {currentBearing !== 0 && (
+          <span className="rounded-md bg-slate-900/90 px-1.5 py-0.5 text-[9px] font-black text-white shadow-xs pointer-events-none">
+            {currentBearing}°
+          </span>
+        )}
+
+        {/* 360-Degree Interactive Rotation Control Floating Drawer */}
+        {showRotationControls && (
+          <div className="mt-1 w-64 max-w-[90vw] rounded-2xl border border-slate-200 bg-white/95 p-3.5 shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm">🧭</span>
+                <span className="text-xs font-bold text-slate-800">360° Map Orientation</span>
+              </div>
+              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-black text-slate-900">
+                {currentBearing}°
+              </span>
+            </div>
+            {/* Smooth 0° - 360° Rotation Range Slider */}
+            <div className="mt-3">
+              <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 mb-1">
+                <span>0° N</span>
+                <span>90° E</span>
+                <span>180° S</span>
+                <span>270° W</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="359"
+                value={currentBearing}
+                onChange={(e) => handleSetBearing(parseInt(e.target.value, 10))}
+                className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
+            </div>
+            {/* Quick Angle Presets */}
+            <div className="mt-3 grid grid-cols-4 gap-1.5 text-center">
+              <button
+                type="button"
+                onClick={() => handleRotateRelative(-45)}
+                className="rounded-lg border border-slate-200 bg-slate-50 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100 transition active:scale-95"
+              >
+                ↺ -45°
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRotateRelative(45)}
+                className="rounded-lg border border-slate-200 bg-slate-50 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100 transition active:scale-95"
+              >
+                ↻ +45°
+              </button>
+              <button
+                type="button"
+                onClick={handleResetNorth}
+                className="rounded-lg border border-red-200 bg-red-50 py-1 text-[11px] font-bold text-red-600 hover:bg-red-100 transition active:scale-95"
+              >
+                North
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const heading = officerHeading ?? deviceHeading ?? 0;
+                  handleSetBearing(heading);
+                }}
+                className="rounded-lg border border-blue-200 bg-blue-50 py-1 text-[11px] font-bold text-blue-600 hover:bg-blue-100 transition active:scale-95"
+              >
+                Ahead
+              </button>
+            </div>
+            <p className="mt-2 text-[10px] text-slate-400 text-center">
+              💡 Twist with 2 fingers or Shift+Drag to rotate
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Floating 360° Compass & Map Controls */}
       <div className="absolute right-4 bottom-6 z-20 flex flex-col items-end gap-2">
