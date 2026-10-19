@@ -9,26 +9,8 @@ interface CacheEntry<T> {
 const CACHE_TTL_MS = 30000; // 30 seconds short-lived memory cache
 const cacheStore = new Map<string, CacheEntry<any>>();
 
-function getCurrentUserKey(): string {
-  if (typeof window !== 'undefined') {
-    try {
-      const user = localStorage.getItem('mv_user');
-      if (user) {
-        const parsed = JSON.parse(user);
-        return String(parsed.officer_id || parsed.id || parsed._id || parsed.email || 'anon');
-      }
-    } catch {
-      // ignore JSON parse error
-    }
-  }
-  return 'default';
-}
-
 if (typeof window !== 'undefined') {
   window.addEventListener('customers-updated', () => {
-    cacheStore.clear();
-  });
-  window.addEventListener('auth-change', () => {
     cacheStore.clear();
   });
 }
@@ -36,9 +18,6 @@ if (typeof window !== 'undefined') {
 export const customerService = {
   clearCache() {
     cacheStore.clear();
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('customers-updated'));
-    }
   },
 
   async getCustomers(params?: {
@@ -52,8 +31,7 @@ export const customerService = {
     search?: string;
     limit?: number;
   }): Promise<Customer[]> {
-    const userKey = getCurrentUserKey();
-    const key = `customers:${userKey}:${JSON.stringify(params || {})}`;
+    const key = `customers:${JSON.stringify(params || {})}`;
     const cached = cacheStore.get(key);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       return cached.data;
@@ -68,8 +46,7 @@ export const customerService = {
   },
 
   async getDtcCodes(all_officers: boolean = false): Promise<DTCCodesResponse> {
-    const userKey = getCurrentUserKey();
-    const key = `dtc_codes:${userKey}:${all_officers}`;
+    const key = `dtc_codes:${all_officers}`;
     const cached = cacheStore.get(key);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       return cached.data;

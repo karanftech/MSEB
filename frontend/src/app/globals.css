@@ -204,12 +204,20 @@
   border: 1px solid rgba(51, 65, 85, 0.7);
 }
 
+/* Enable GPU hardware acceleration on map rotation panes */
+.leaflet-pane,
+.leaflet-map-pane,
+.leaflet-rotate-pane {
+  will-change: transform;
+  transform-origin: center center;
+}
+
 /* Smooth transition ONLY when programmatically resetting North */
 .leaflet-rotate-pane.leaflet-rotating-smooth {
   transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
-/* Interactive touch rotation must have zero transition delay */
+/* Interactive gestures must have ZERO transition delay for instant 60/120fps tracking */
 .leaflet-rotate-pane {
   transition: none !important;
 }

@@ -51,20 +51,12 @@ class CustomerService:
             conditions.append(Customer.status != "paid")
 
         if officer_id:
-            if isinstance(officer_id, (list, set, tuple)):
-                conditions.append(
-                    or_(
-                        Customer.assigned_officer_id.in_(list(officer_id)),
-                        Customer.uploaded_by_officer_id.in_(list(officer_id))
-                    )
+            conditions.append(
+                or_(
+                    Customer.assigned_officer_id == officer_id,
+                    Customer.uploaded_by_officer_id == officer_id
                 )
-            else:
-                conditions.append(
-                    or_(
-                        Customer.assigned_officer_id == officer_id,
-                        Customer.uploaded_by_officer_id == officer_id
-                    )
-                )
+            )
 
         # Spatial filter ST_DWithin
         conditions.append(
@@ -81,19 +73,12 @@ class CustomerService:
             results = (await db.execute(stmt)).all()
         except Exception:
             # Fallback in case PostGIS extension not active yet or local connection: calculate via haversine
-            officer_cond = text("1=1")
-            if officer_id:
-                if isinstance(officer_id, (list, set, tuple)):
-                    officer_cond = or_(Customer.assigned_officer_id.in_(list(officer_id)), Customer.uploaded_by_officer_id.in_(list(officer_id)))
-                else:
-                    officer_cond = or_(Customer.assigned_officer_id == officer_id, Customer.uploaded_by_officer_id == officer_id)
-
             fallback_stmt = select(Customer).where(
                 and_(
                     Customer.latitude != 0.0,
                     Customer.longitude != 0.0,
                     Customer.status == status_filter if status_filter else Customer.status != "paid",
-                    officer_cond
+                    or_(Customer.assigned_officer_id == officer_id, Customer.uploaded_by_officer_id == officer_id) if officer_id else text("1=1")
                 )
             ).limit(200)
             rows = (await db.execute(fallback_stmt)).scalars().all()

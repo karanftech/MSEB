@@ -60,7 +60,7 @@ class PaymentService:
         officer_id = officer.get("officer_id", str(officer.get("_id")))
 
         disconn_status = request.disconnection_status
-        if not disconn_status and request.payment_method.lower() in ["td", "pd", "bur", "dis", "other"]:
+        if not disconn_status and request.payment_method.lower() in ["td", "pd", "bur", "dis"]:
             disconn_status = request.payment_method.upper()
 
         pt_geom = None

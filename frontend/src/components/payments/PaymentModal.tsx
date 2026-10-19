@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
-import { CreditCard, CheckCircle2, AlertCircle, RefreshCw, Clock, AlertTriangle, X, ChevronDown } from 'lucide-react';
+import { CreditCard, CheckCircle2, AlertCircle, RefreshCw, Clock, AlertTriangle, X } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { Customer, PaymentRecord } from '@/types';
-import { formatCurrency, formatDate, getCustomerEffectiveOverdueDays } from '@/utils/formatters';
+import { formatCurrency, formatDate, getOverdueDays } from '@/utils/formatters';
 import { paymentService } from '@/services/paymentService';
 import { offlineService } from '@/services/offlineService';
 import { useOffline } from '@/hooks/useOffline';
@@ -17,7 +17,7 @@ interface PaymentModalProps {
   onSuccess: (paymentRecord: PaymentRecord) => void;
 }
 
-export type PaymentMethodType = 'td' | 'pd' | 'bur' | 'dis' | 'other';
+export type PaymentMethodType = 'td' | 'pd' | 'bur' | 'dis';
 
 export default function PaymentModal({
   isOpen,
@@ -52,14 +52,23 @@ export default function PaymentModal({
 
   if (!customer) return null;
 
-  const rawPendingDays = getCustomerEffectiveOverdueDays(customer);
+  const overdueDays = getOverdueDays(customer.due_date);
+  const rawPendingDays =
+    customer.pending_days !== undefined && customer.pending_days !== null && customer.pending_days !== ''
+      ? customer.pending_days
+      : (customer as any)['pending days'] !== undefined && (customer as any)['pending days'] !== null && (customer as any)['pending days'] !== ''
+      ? (customer as any)['pending days']
+      : (customer as any).days !== undefined && (customer as any).days !== null && (customer as any).days !== ''
+      ? (customer as any).days
+      : overdueDays > 0
+      ? overdueDays
+      : 0;
 
   const paymentMethodsList = [
-    { key: 'td' as const, label: 'TD - Temporary Disconnect' },
-    { key: 'pd' as const, label: 'PD - Permanent Disconnect' },
-    { key: 'bur' as const, label: 'BUR - Bill Under Review' },
-    { key: 'dis' as const, label: 'DIS - Disconnected' },
-    { key: 'other' as const, label: 'OTHER - Other Action / Status' },
+    { key: 'td' as const, label: 'TD', desc: 'Temporary Disconnect' },
+    { key: 'pd' as const, label: 'PD', desc: 'Permanent Disconnect' },
+    { key: 'bur' as const, label: 'BUR', desc: 'Bill Under Review' },
+    { key: 'dis' as const, label: 'DIS', desc: 'Disconnected' },
   ];
 
   const handlePreSubmit = (e: React.FormEvent) => {
@@ -67,7 +76,7 @@ export default function PaymentModal({
     setError(null);
 
     const amt = parseFloat(collectedAmount);
-    const isStatusMode = ['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod);
+    const isStatusMode = ['td', 'pd', 'bur', 'dis'].includes(paymentMethod);
 
     if (isNaN(amt) || (isStatusMode ? amt < 0 : amt <= 0)) {
       setError(isStatusMode ? 'Please enter a valid amount (>= 0).' : 'Please enter a valid collection amount greater than 0.');
@@ -94,7 +103,7 @@ export default function PaymentModal({
       meter_id: customer.meters?.[0]?.meter_id,
       amount: amt,
       payment_method: paymentMethod as any,
-      disconnection_status: ['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined,
+      disconnection_status: ['td', 'pd', 'bur', 'dis'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined,
       remarks: remarks.trim() || undefined,
       collection_latitude: officerCoords?.latitude,
       collection_longitude: officerCoords?.longitude,
@@ -226,28 +235,35 @@ export default function PaymentModal({
           />
         </div>
 
-        {/* Action / Status Mode Dropdown */}
+        {/* Action / Meter Status Mode: TD, PD, BUR, DIS */}
         <div>
-          <label htmlFor="action-status-mode-select" className="font-semibold text-slate-700 block mb-1.5">
-            Action / Status Mode *
-          </label>
-          <div className="relative">
-            <select
-              id="action-status-mode-select"
-              value={paymentMethod}
-              onChange={(e) => setPaymentMethod(e.target.value as PaymentMethodType)}
-              className="w-full bg-white border border-slate-300 text-slate-900 font-bold text-xs sm:text-sm rounded-lg px-3 py-2.5 pr-10 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none cursor-pointer shadow-xs transition-all"
-              required
-            >
-              {paymentMethodsList.map((method) => (
-                <option key={method.key} value={method.key} className="py-1 text-slate-900 font-medium">
-                  {method.label}
-                </option>
-              ))}
-            </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500">
-              <ChevronDown className="w-4 h-4" />
-            </div>
+          <label className="font-semibold text-slate-700 block mb-1.5">Action / Status Mode *</label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {paymentMethodsList.map((method) => {
+              const isSelected = paymentMethod === method.key;
+              const isStatus = ['td', 'pd', 'bur', 'dis'].includes(method.key);
+              return (
+                <button
+                  key={method.key}
+                  type="button"
+                  onClick={() => {
+                    setPaymentMethod(method.key);
+                  }}
+                  className={`py-2 px-2 rounded-lg font-bold text-left transition-all border cursor-pointer ${
+                    isSelected
+                      ? isStatus
+                        ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                        : 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <p className="text-[11px] font-black uppercase leading-tight">{method.label}</p>
+                  <p className={`text-[9px] font-medium leading-none mt-0.5 truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
+                    {method.desc}
+                  </p>
+                </button>
+              );
+            })}
           </div>
         </div>
 

@@ -59,42 +59,11 @@ export function formatDuration(seconds?: number | null): string {
   return `${hrs} hr ${remMins} min`;
 }
 
-export function parseDateSafe(dateString?: string | null): Date | null {
-  if (!dateString) return null;
-  const str = String(dateString).trim();
-  if (!str) return null;
-
-  // Match DD-MM-YYYY or DD/MM/YYYY
-  const dmyMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
-  if (dmyMatch) {
-    const day = parseInt(dmyMatch[1], 10);
-    const month = parseInt(dmyMatch[2], 10) - 1;
-    const year = parseInt(dmyMatch[3], 10);
-    const d = new Date(year, month, day);
-    if (!isNaN(d.getTime())) return d;
-  }
-
-  // Match YYYY-MM-DD or YYYY/MM/DD
-  const ymdMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (ymdMatch) {
-    const year = parseInt(ymdMatch[1], 10);
-    const month = parseInt(ymdMatch[2], 10) - 1;
-    const day = parseInt(ymdMatch[3], 10);
-    const d = new Date(year, month, day);
-    if (!isNaN(d.getTime())) return d;
-  }
-
-  const standard = new Date(str);
-  if (!isNaN(standard.getTime())) return standard;
-
-  return null;
-}
-
 export function getOverdueDays(dueDateString?: string | null): number {
   if (!dueDateString) return 0;
   try {
-    const due = parseDateSafe(dueDateString);
-    if (!due || isNaN(due.getTime())) return 0;
+    const due = new Date(dueDateString);
+    if (isNaN(due.getTime())) return 0;
     const today = new Date();
     due.setHours(0, 0, 0, 0);
     today.setHours(0, 0, 0, 0);
@@ -106,33 +75,10 @@ export function getOverdueDays(dueDateString?: string | null): number {
   }
 }
 
-export function getCustomerEffectiveOverdueDays(customer?: any): number {
-  if (!customer) return 0;
-
-  const rawPendingDays =
-    customer.pending_days ??
-    customer['pending days'] ??
-    customer['Pending Days'] ??
-    customer.pendingDays ??
-    customer.days_pending ??
-    customer.overdue_days ??
-    customer.days;
-
-  if (rawPendingDays !== undefined && rawPendingDays !== null && rawPendingDays !== '') {
-    const parsed = Number(rawPendingDays);
-    if (!isNaN(parsed)) {
-      return parsed > 0 ? parsed : 0;
-    }
-  }
-
-  return getOverdueDays(customer.due_date);
-}
-
 export function matchCustomerFilters(
   customer: {
     pending_amount: number;
     due_date?: string;
-    pending_days?: number | string;
     status: string;
     priority?: string;
     name: string;
@@ -140,7 +86,6 @@ export function matchCustomerFilters(
     meter_number: string;
     address: string;
     dtc_code?: string;
-    [key: string]: any;
   },
   filters: {
     overduePeriod?: string;
@@ -162,7 +107,7 @@ export function matchCustomerFilters(
 
   // 2. Overdue Period Filter (Days overdue)
   if (filters.overduePeriod && filters.overduePeriod !== 'all') {
-    const days = getCustomerEffectiveOverdueDays(customer);
+    const days = getOverdueDays(customer.due_date);
     if (filters.overduePeriod === 'days_over_35' && days <= 35) return false;
     if (filters.overduePeriod === 'days_over_40' && days <= 40) return false;
     if (filters.overduePeriod === 'days_over_45' && days <= 45) return false;
@@ -222,7 +167,5 @@ export default {
   formatDistance,
   formatDuration,
   getOverdueDays,
-  getCustomerEffectiveOverdueDays,
-  parseDateSafe,
   matchCustomerFilters,
 };

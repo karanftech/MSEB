@@ -9,7 +9,7 @@ from app.models.customer import Customer
 from app.schemas.payment import PaymentCollectRequest, PaymentResponse, ReceiptData
 from app.services.payment_service import PaymentService
 from app.services.cache_service import cache_service
-from app.utils.dependencies import get_current_user, require_officer, get_or_create_officer_context
+from app.utils.dependencies import get_current_user, require_officer
 
 router = APIRouter(prefix="/api/payments", tags=["Payments"])
 
@@ -33,14 +33,10 @@ async def list_payments(
     current_user: dict = Depends(get_current_user)
 ):
     stmt = select(Payment)
-    if current_user.get("role") != "admin":
-        officer_ctx = await get_or_create_officer_context(db, current_user)
-        stmt = stmt.where(Payment.officer_id.in_(list(officer_ctx["filter_ids"])))
-    elif officer_id:
-        stmt = stmt.where(Payment.officer_id == officer_id)
-
     if customer_id:
         stmt = stmt.where(Payment.customer_id == customer_id)
+    if officer_id:
+        stmt = stmt.where(Payment.officer_id == officer_id)
 
     stmt = stmt.order_by(desc(Payment.created_at)).limit(limit)
     payments_docs = (await db.execute(stmt)).scalars().all()
