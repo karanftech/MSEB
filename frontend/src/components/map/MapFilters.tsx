@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, Filter, Navigation, Loader2, Square, RotateCcw, Volume2, VolumeX, Check, Zap, X } from 'lucide-react';
-import { MapFilterState, Customer, OverduePeriodFilter, OutstandingAmountFilter, DTCCodeOption, DisconnectionStatusFilter } from '@/types';
+import { MapFilterState, Customer, OverduePeriodFilter, OutstandingAmountFilter, DTCCodeOption } from '@/types';
 import { customerService } from '@/services/customerService';
 
 interface MapFiltersProps {
@@ -81,15 +81,6 @@ export default function MapFilters({
     };
   }, []);
 
-  const disconnectionStatusOptions: { key: DisconnectionStatusFilter; label: string; desc: string }[] = [
-    { key: 'all', label: 'All Statuses', desc: 'All meters' },
-    { key: 'td', label: 'TD', desc: 'Temporary Disconnect' },
-    { key: 'pd', label: 'PD', desc: 'Permanent Disconnect' },
-    { key: 'bur', label: 'BUR', desc: 'Bill Under Review' },
-    { key: 'dis', label: 'DIS', desc: 'Disconnected' },
-    { key: 'other', label: 'OTHER', desc: 'Other Status' },
-  ];
-
   const overduePeriodOptions: { key: OverduePeriodFilter; label: string }[] = [
     { key: 'all', label: 'All Days' },
     { key: 'days_over_35', label: '> 35 Days Overdue' },
@@ -112,7 +103,6 @@ export default function MapFilters({
   const isFilterActive =
     (filters.overduePeriod && filters.overduePeriod !== 'all') ||
     (filters.outstandingAmount && filters.outstandingAmount !== 'all') ||
-    (filters.disconnectionStatus && filters.disconnectionStatus !== 'all') ||
     (filters.status && filters.status !== 'all') ||
     (filters.dtcCode && filters.dtcCode !== 'all');
 
@@ -121,7 +111,6 @@ export default function MapFilters({
       ...filters,
       overduePeriod: 'all',
       outstandingAmount: 'all',
-      disconnectionStatus: 'all',
       status: 'all',
       dtcCode: 'all',
       searchQuery: '',
@@ -279,48 +268,8 @@ export default function MapFilters({
             </div>
           </div>
 
-          {/* Section 0: FILTER BY ACTION / DISCONNECTION STATUS */}
-          <div className="space-y-2">
-            <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest px-0.5">
-              Action / Status Mode (TD, PD, BUR, DIS, OTHER)
-            </h4>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {disconnectionStatusOptions.map((opt) => {
-                const isSelected = (filters.disconnectionStatus || 'all') === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => {
-                      onFilterChange({ ...filters, disconnectionStatus: opt.key });
-                    }}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-left transition-all cursor-pointer border ${
-                      isSelected
-                        ? 'border-amber-600 bg-amber-50/80 text-amber-900 font-bold shadow-2xs'
-                        : 'border-slate-200 bg-white text-slate-700 font-medium hover:bg-slate-50 hover:border-slate-300'
-                    }`}
-                  >
-                    <div
-                      className={`w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0 ${
-                        isSelected
-                          ? 'bg-amber-600 border-amber-600 text-white'
-                          : 'border-slate-300 bg-white'
-                      }`}
-                    >
-                      {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                    </div>
-                    <div className="min-w-0">
-                      <span className="truncate block font-bold">{opt.label}</span>
-                      <span className="text-[9px] text-slate-400 truncate block leading-tight">{opt.desc}</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
           {/* Section 1: FILTER BY OVERDUE PERIOD */}
-          <div className="space-y-2 pt-2 border-t border-slate-100">
+          <div className="space-y-2">
             <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-0.5">
               Filter by Overdue Period
             </h4>

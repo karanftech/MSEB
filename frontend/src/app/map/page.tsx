@@ -78,7 +78,6 @@ function MapPageContent() {
 
   const [filters, setFilters] = useState<MapFilterState>({
     status: (urlStatus as any) || 'all',
-    disconnectionStatus: (urlDisconn as any) || 'all',
     dtcCode: urlDtc || 'all',
     overduePeriod: 'all',
     outstandingAmount: 'all',

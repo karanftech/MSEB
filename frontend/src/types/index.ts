@@ -232,11 +232,8 @@ export type OutstandingAmountFilter =
   | 'over_5000'
   | 'over_10000';
 
-export type DisconnectionStatusFilter = 'all' | 'td' | 'pd' | 'bur' | 'dis' | 'other';
-
 export interface MapFilterState {
   status?: 'all' | 'pending' | 'overdue' | 'high_amount' | 'due_today' | 'due_week' | 'collected';
-  disconnectionStatus?: DisconnectionStatusFilter;
   dtcCode?: string;
   overduePeriod: OverduePeriodFilter;
   outstandingAmount: OutstandingAmountFilter;
