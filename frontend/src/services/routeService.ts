@@ -274,18 +274,18 @@ export const routeService = {
       };
     }
 
-    // Limit multi-stop calculation to nearest 25 consumers to prevent browser freeze
-    const nearestCustomers = pendingCustomers.length > 25
+    // Route up to 100 pending consumers to connect all meters in the ward/DTC
+    const targetCustomers = pendingCustomers.length > 100
       ? [...pendingCustomers]
           .sort((a, b) => {
             const da = calculateHaversineDistance(origin.latitude, origin.longitude, a.latitude, a.longitude);
             const db = calculateHaversineDistance(origin.latitude, origin.longitude, b.latitude, b.longitude);
             return da - db;
           })
-          .slice(0, 25)
+          .slice(0, 100)
       : pendingCustomers;
 
-    const cacheKey = `${origin.latitude.toFixed(4)},${origin.longitude.toFixed(4)}::${nearestCustomers.map((c) => c.customer_id).sort().join(',')}`;
+    const cacheKey = `${origin.latitude.toFixed(4)},${origin.longitude.toFixed(4)}::${targetCustomers.map((c) => c.customer_id).sort().join(',')}`;
     const cached = multiRouteCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
       return cached.data;
@@ -296,7 +296,7 @@ export const routeService = {
         '/api/routes/calculate-multi',
         {
           origin,
-          customers: nearestCustomers.map((c) => ({
+          customers: targetCustomers.map((c) => ({
             customer_id: c.customer_id,
             name: c.name,
             meter_number: c.meter_number,
@@ -307,17 +307,17 @@ export const routeService = {
             priority: c.priority,
           })),
         },
-        { timeout: 5000 }
+        { timeout: 12000 }
       );
       if (response.data && response.data.coordinates_path?.length >= 2) {
         multiRouteCache.set(cacheKey, { data: response.data, ts: Date.now() });
         return response.data;
       }
     } catch (err) {
-      // Backend calculate-multi offline, use fast client-side batched multi-routing
+      // Backend calculate-multi offline or timed out, use fast client-side batched multi-routing
     }
 
-    const clientRes = await this.calculateClientMultiRoute(origin, nearestCustomers);
+    const clientRes = await this.calculateClientMultiRoute(origin, targetCustomers);
     multiRouteCache.set(cacheKey, { data: clientRes, ts: Date.now() });
     return clientRes;
   },

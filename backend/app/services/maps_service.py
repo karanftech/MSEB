@@ -367,8 +367,8 @@ class MapsService:
             "https://router.project-osrm.org/route/v1/driving",
         ]
 
-        batch_size = 20
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        batch_size = 25
+        async with httpx.AsyncClient(timeout=10.0) as client:
             for b in range(0, len(points) - 1, batch_size - 1):
                 batch_points = points[b:b + batch_size]
                 if len(batch_points) < 2:
