@@ -74,6 +74,7 @@ async def get_field_performance_report(
 
     visited_consumer_ids = set(v["consumer_id"] for v in visit_docs if v.get("consumer_id"))
     total_visited = len(visited_consumer_ids)
+    total_visits = len(visit_docs)
     unvisited_remaining = max(0, total_assigned - total_visited)
 
     total_recovered = sum(safe_float(v.get("amount_collected")) for v in visit_docs if v.get("status") == "Payment Recovered")
@@ -83,13 +84,14 @@ async def get_field_performance_report(
     total_ward_demand = total_recovered + outstanding_balance
     recovery_rate = round((total_recovered / total_ward_demand * 100.0), 1) if total_ward_demand > 0 else 0.0
 
+    # Group outcomes consistently by unique consumer accounts visited
     status_counts = {
-        "Payment Recovered": len(visit_docs),
-        "Not Recovered": 0,
-        "Contacted": 0,
-        "Unavailable": 0,
-        "Meter Issue": 0,
-        "Other / Followup": 0
+        "Payment Recovered": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Payment Recovered")),
+        "Not Recovered": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Not Recovered")),
+        "Contacted": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Contacted")),
+        "Unavailable": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Unavailable")),
+        "Meter Issue": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Meter Issue")),
+        "Other / Followup": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Other / Followup")),
     }
 
     filtered_visits = visit_docs
@@ -110,6 +112,7 @@ async def get_field_performance_report(
     return {
         "kpis": {
             "consumers_visited_count": total_visited,
+            "total_visits_count": total_visits,
             "total_assigned_consumers": total_assigned,
             "unvisited_consumers_remaining": unvisited_remaining,
             "total_recovered": round(total_recovered, 2),

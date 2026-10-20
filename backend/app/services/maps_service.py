@@ -358,68 +358,110 @@ class MapsService:
 
         total_distance = 0.0
         total_duration = 0.0
-        full_coords_path: List[Coordinates] = [Coordinates(latitude=origin_lat, longitude=origin_lng)]
+        full_coords_path: List[Coordinates] = []
         stops: List[MultiRouteStop] = []
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            for seq_i in range(len(tour)):
-                c_idx = tour[seq_i]
-                cust = customers[c_idx]
-                prev_p = points[seq_i]
-                curr_p = points[seq_i + 1]
+        osrm_servers = [
+            "https://routing.openstreetmap.de/routed-car/route/v1/driving",
+            settings.OSRM_BASE_URL.rstrip('/'),
+            "https://router.project-osrm.org/route/v1/driving",
+        ]
 
-                leg_dist = 0.0
-                leg_dur = 0.0
-                leg_coords: List[Coordinates] = []
+        batch_size = 20
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            for b in range(0, len(points) - 1, batch_size - 1):
+                batch_points = points[b:b + batch_size]
+                if len(batch_points) < 2:
+                    break
 
-                try:
-                    osrm_url = f"https://router.project-osrm.org/route/v1/driving/{prev_p[1]},{prev_p[0]};{curr_p[1]},{curr_p[0]}?overview=full&geometries=geojson"
-                    res = await client.get(osrm_url)
-                    if res.status_code == 200:
-                        data = res.json()
-                        if data.get("code") == "Ok" and data.get("routes"):
-                            r = data["routes"][0]
-                            leg_dist = float(r.get("distance", 0))
-                            leg_dur = float(r.get("duration", 0))
-                            geo_coords = r.get("geometry", {}).get("coordinates", [])
-                            leg_coords = [Coordinates(latitude=pt[1], longitude=pt[0]) for pt in geo_coords]
-                except Exception as e:
-                    logger.warning(f"OSRM leg routing error: {e}")
+                coords_param = ";".join(f"{p[1]},{p[0]}" for p in batch_points)
+                batch_done = False
 
-                if not leg_coords or len(leg_coords) < 2:
-                    air_d = haversine_distance(prev_p[0], prev_p[1], curr_p[0], curr_p[1])
-                    leg_dist = air_d * 1.35
-                    leg_dur = leg_dist / 6.94
-                    leg_coords = [
-                        Coordinates(latitude=prev_p[0], longitude=prev_p[1]),
-                        Coordinates(latitude=curr_p[0], longitude=curr_p[1])
-                    ]
+                for srv in osrm_servers:
+                    try:
+                        url = f"{srv}/{coords_param}?overview=full&geometries=geojson&steps=false"
+                        res = await client.get(url)
+                        if res.status_code == 200:
+                            data = res.json()
+                            if data.get("code") == "Ok" and data.get("routes"):
+                                r = data["routes"][0]
+                                total_distance += float(r.get("distance", 0))
+                                total_duration += float(r.get("duration", 0))
 
-                total_distance += leg_dist
-                total_duration += leg_dur
+                                geo_coords = r.get("geometry", {}).get("coordinates", [])
+                                for pt in geo_coords:
+                                    c = Coordinates(latitude=pt[1], longitude=pt[0])
+                                    if not full_coords_path or full_coords_path[-1].latitude != c.latitude or full_coords_path[-1].longitude != c.longitude:
+                                        full_coords_path.append(c)
 
-                for pt in leg_coords:
-                    if not (full_coords_path and full_coords_path[-1].latitude == pt.latitude and full_coords_path[-1].longitude == pt.longitude):
-                        full_coords_path.append(pt)
+                                legs = r.get("legs", [])
+                                for leg_i, leg in enumerate(legs):
+                                    stop_idx = b + leg_i
+                                    if stop_idx < len(tour):
+                                        cust = customers[tour[stop_idx]]
+                                        ldist = float(leg.get("distance", 0))
+                                        ldur = float(leg.get("duration", 0))
+                                        d_text = f"{ldist / 1000.0:.2f} km" if ldist >= 1000 else f"{int(ldist)} m"
+                                        dur_text = f"{int(ldur // 60)} min" if ldur >= 60 else "< 1 min"
+                                        stops.append(
+                                            MultiRouteStop(
+                                                sequence=stop_idx + 1,
+                                                customer_id=cust.customer_id,
+                                                name=cust.name,
+                                                meter_number=cust.meter_number,
+                                                pending_amount=cust.pending_amount,
+                                                address=cust.address or "",
+                                                latitude=cust.latitude,
+                                                longitude=cust.longitude,
+                                                distance_from_prev_meters=round(ldist, 1),
+                                                distance_from_prev_text=d_text,
+                                                duration_from_prev_text=dur_text
+                                            )
+                                        )
+                                batch_done = True
+                                break
+                    except Exception as e:
+                        logger.warning(f"OSRM batch query on {srv} failed: {e}")
 
-                dist_text = f"{leg_dist / 1000.0:.2f} km" if leg_dist >= 1000 else f"{int(leg_dist)} m"
-                dur_text = f"{int(leg_dur // 60)} min" if leg_dur >= 60 else "< 1 min"
+                if not batch_done:
+                    # Fallback corridor interpolation for this batch
+                    for pt_i in range(len(batch_points) - 1):
+                        p1 = batch_points[pt_i]
+                        p2 = batch_points[pt_i + 1]
+                        stop_idx = b + pt_i
+                        air_d = haversine_distance(p1[0], p1[1], p2[0], p2[1]) * 1.35
+                        dur = air_d / 6.94
+                        total_distance += air_d
+                        total_duration += dur
 
-                stops.append(
-                    MultiRouteStop(
-                        sequence=seq_i + 1,
-                        customer_id=cust.customer_id,
-                        name=cust.name,
-                        meter_number=cust.meter_number,
-                        pending_amount=cust.pending_amount,
-                        address=cust.address or "",
-                        latitude=cust.latitude,
-                        longitude=cust.longitude,
-                        distance_from_prev_meters=round(leg_dist, 1),
-                        distance_from_prev_text=dist_text,
-                        duration_from_prev_text=dur_text
-                    )
-                )
+                        interp_coords = [
+                            Coordinates(latitude=p1[0], longitude=p1[1]),
+                            Coordinates(latitude=round(p1[0] + (p2[0] - p1[0]) * 0.5, 6), longitude=round(p1[1] + (p2[1] - p1[1]) * 0.5, 6)),
+                            Coordinates(latitude=p2[0], longitude=p2[1])
+                        ]
+                        for c in interp_coords:
+                            if not full_coords_path or full_coords_path[-1].latitude != c.latitude or full_coords_path[-1].longitude != c.longitude:
+                                full_coords_path.append(c)
+
+                        if stop_idx < len(tour):
+                            cust = customers[tour[stop_idx]]
+                            d_text = f"{air_d / 1000.0:.2f} km" if air_d >= 1000 else f"{int(air_d)} m"
+                            dur_text = f"{int(dur // 60)} min" if dur >= 60 else "< 1 min"
+                            stops.append(
+                                MultiRouteStop(
+                                    sequence=stop_idx + 1,
+                                    customer_id=cust.customer_id,
+                                    name=cust.name,
+                                    meter_number=cust.meter_number,
+                                    pending_amount=cust.pending_amount,
+                                    address=cust.address or "",
+                                    latitude=cust.latitude,
+                                    longitude=cust.longitude,
+                                    distance_from_prev_meters=round(air_d, 1),
+                                    distance_from_prev_text=d_text,
+                                    duration_from_prev_text=dur_text
+                                )
+                            )
 
         total_dist_text = f"{total_distance / 1000.0:.2f} km" if total_distance >= 1000 else f"{int(total_distance)} m"
         total_dur_text = f"{int(total_duration // 60)} min" if total_duration >= 60 else "< 1 min"
@@ -429,7 +471,7 @@ class MapsService:
             total_distance_text=total_dist_text,
             total_duration_seconds=round(total_duration, 1),
             total_duration_text=total_dur_text,
-            coordinates_path=full_coords_path,
+            coordinates_path=full_coords_path if full_coords_path else [Coordinates(latitude=origin_lat, longitude=origin_lng)],
             stops=stops
         )
 

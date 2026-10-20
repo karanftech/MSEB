@@ -109,6 +109,9 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 20,
       subdomains: ['0', '1', '2', '3'],
       attribution: '&copy; Google Maps',
+      keepBuffer: 2,
+      updateWhenIdle: true,
+      updateInterval: 150,
     },
   },
   satellite: {
@@ -117,6 +120,9 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 20,
       subdomains: ['0', '1', '2', '3'],
       attribution: '&copy; Google Maps',
+      keepBuffer: 2,
+      updateWhenIdle: true,
+      updateInterval: 150,
     },
   },
   hybrid: {
@@ -125,6 +131,9 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 20,
       subdomains: ['0', '1', '2', '3'],
       attribution: '&copy; Google Maps',
+      keepBuffer: 2,
+      updateWhenIdle: true,
+      updateInterval: 150,
     },
   },
   terrain: {
@@ -133,6 +142,9 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       maxZoom: 20,
       subdomains: ['0', '1', '2', '3'],
       attribution: '&copy; Google Maps',
+      keepBuffer: 2,
+      updateWhenIdle: true,
+      updateInterval: 150,
     },
   },
 };
@@ -163,6 +175,7 @@ export default function MapView({
   const tileLayerRef = useRef<any>(null);
   const officerMarkerRef = useRef<any>(null);
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
+  const markerStateCacheRef = useRef<Map<string, string>>(new Map());
   const routePolylineCasingRef = useRef<any>(null);
   const routePolylineRef = useRef<any>(null);
   const LRef = useRef<any>(null);
@@ -388,13 +401,6 @@ export default function MapView({
               if (!touchRafId) {
                 touchRafId = requestAnimationFrame(stepRotation);
               }
-
-              // Throttle React state updates to 100ms
-              const now = performance.now();
-              if (now - lastTouchUiSync > 100) {
-                lastTouchUiSync = now;
-                setCurrentBearing(Math.round(targetBearing));
-              }
             }
           }
         };
@@ -470,12 +476,6 @@ export default function MapView({
 
             if (!shiftRafId) {
               shiftRafId = requestAnimationFrame(stepShiftRotation);
-            }
-
-            const now = performance.now();
-            if (now - lastShiftUiSync > 100) {
-              lastShiftUiSync = now;
-              setCurrentBearing(shiftTargetBearing);
             }
           }
         };
@@ -627,6 +627,7 @@ export default function MapView({
       if (!currentIds.has(id)) {
         map.removeLayer(marker);
         customerMarkersRef.current.delete(id);
+        markerStateCacheRef.current.delete(id);
       }
     });
 
@@ -636,6 +637,20 @@ export default function MapView({
       const isSelected = selectedCustomer?.customer_id === customer.customer_id;
       const multiStop = multiRoute?.stops?.find((s) => s.customer_id === customer.customer_id);
       const isCurrentStop = multiStop && (multiStop.sequence - 1) === activeStopIndex;
+      const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
+
+      const stateKey = `${customer.customer_id}:${customer.status}:${customer.priority}:${isSelected}:${isCurrentStop}:${multiStop?.sequence}:${customer.meter_number}:${customer.pending_amount}:${rawPendingDays}`;
+      let marker = customerMarkersRef.current.get(customer.customer_id);
+
+      // Fast-path: if marker already exists and its visual state is identical, skip DOM icon rebuild
+      if (marker && markerStateCacheRef.current.get(customer.customer_id) === stateKey) {
+        if (isSelected && typeof marker.isPopupOpen === 'function' && !marker.isPopupOpen()) {
+          marker.openPopup();
+        }
+        return;
+      }
+
+      markerStateCacheRef.current.set(customer.customer_id, stateKey);
 
       const markerHtml = buildConsumerMarkerHtml(
         customer.status,
@@ -653,9 +668,6 @@ export default function MapView({
       });
 
       const pos: [number, number] = [customer.latitude, customer.longitude];
-      let marker = customerMarkersRef.current.get(customer.customer_id);
-
-      const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
       const daysText = rawPendingDays !== undefined && rawPendingDays !== null ? `${rawPendingDays} Days` : '-';
       const isHighPending = Number(rawPendingDays) > 30;
 

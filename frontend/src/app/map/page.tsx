@@ -187,13 +187,18 @@ function MapPageContent() {
 
       lastFilteredCustomerIdsRef.current = currentIdsKey;
       lastMultiRouteOfficerCoordsRef.current = effectiveCoords;
-      routeService.calculateMultiRoute(effectiveCoords, pendingCustomersForRoute)
-        .then((res) => {
-          setMultiRoute(res);
-        })
-        .catch((err) => {
-          console.warn('Auto multi-route calculation error for filtered DTC:', err);
-        });
+
+      const timer = setTimeout(() => {
+        routeService.calculateMultiRoute(effectiveCoords, pendingCustomersForRoute)
+          .then((res) => {
+            setMultiRoute(res);
+          })
+          .catch((err) => {
+            console.warn('Auto multi-route calculation error for filtered DTC:', err);
+          });
+      }, 400);
+
+      return () => clearTimeout(timer);
     } else {
       // Clear route if no DTC is filtered and not multi-navigating
       lastFilteredCustomerIdsRef.current = '';

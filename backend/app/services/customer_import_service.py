@@ -330,7 +330,7 @@ class CustomerImportService:
 
                 raw_disconn = get_val('disconnection_status', '').upper()
                 disconn_status = None
-                for cat in ['TD', 'PD', 'BUR', 'DIS']:
+                for cat in ['TD', 'PD', 'BUR', 'DIS', 'OTHER']:
                     if cat in raw_disconn:
                         disconn_status = cat
                         break

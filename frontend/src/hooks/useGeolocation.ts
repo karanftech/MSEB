@@ -79,11 +79,11 @@ export function useGeolocation(watch: boolean = true) {
       return;
     }
 
-    // Get current position initially
+    // Get current position initially (use recent cached position if available for instant load)
     navigator.geolocation.getCurrentPosition(handleSuccess, handleError, {
       enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0,
+      timeout: 6000,
+      maximumAge: 30000,
     });
 
     let watchId: number | null = null;

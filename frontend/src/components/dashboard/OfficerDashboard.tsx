@@ -3,8 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Users, DollarSign, FileText, CheckCircle2, Target, Navigation, Clock, ChevronRight, Zap, Upload, AlertTriangle, ShieldAlert, Flame, PowerOff } from 'lucide-react';
-import { OfficerDashboardMetrics, NearbyCustomer, Customer, PaymentRecord } from '@/types';
-import { formatCurrency, formatDistance, formatDuration } from '@/utils/formatters';
+import { OfficerDashboardMetrics, Customer, PaymentRecord } from '@/types';
+import { formatCurrency } from '@/utils/formatters';
 import api from '@/services/api';
 import { useGeolocation } from '@/hooks/useGeolocation';
 
@@ -21,7 +21,7 @@ export default function OfficerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [isAssignedModalOpen, setIsAssignedModalOpen] = useState<boolean>(false);
-  const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | null>(null);
+  const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null>(null);
   const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null);
   const [receiptRecord, setReceiptRecord] = useState<PaymentRecord | null>(null);
 
@@ -266,7 +266,7 @@ export default function OfficerDashboard() {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
           {/* Card 1: TD (Temporary Disconnect) */}
           <button
             type="button"
@@ -386,58 +386,37 @@ export default function OfficerDashboard() {
               </div>
             </div>
           </button>
-        </div>
-      </div>
 
-
-      {/* Nearby Pending Customers Section */}
-      <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Navigation className="w-4 h-4 text-blue-600" />
-            <h3 className="font-bold text-slate-900 text-base">Nearby Pending Customers</h3>
-          </div>
-          <Link href="/map" className="text-xs text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1">
-            <span>View All on Map</span>
-            <ChevronRight className="w-4 h-4" />
-          </Link>
-        </div>
-
-        {metrics.nearby_pending_customers.length === 0 ? (
-          <div className="text-center py-8 text-slate-500 text-xs">
-            No nearby pending customers found within 5 km radius.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {metrics.nearby_pending_customers.map((cus, idx) => (
-              <div
-                key={cus.customer_id}
-                className="bg-slate-50 p-3.5 rounded-md border border-slate-200 hover:border-slate-300 transition-colors flex justify-between items-center"
-              >
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-slate-200 text-slate-700 text-[10px] font-bold flex items-center justify-center">
-                      {idx + 1}
-                    </span>
-                    <h4 className="font-bold text-slate-900 text-sm">{cus.name}</h4>
-                  </div>
-                  <p className="text-xs text-slate-500">
-                    {formatDistance(cus.distance_meters)} • Est. {cus.estimated_duration_mins ? `${Math.round(cus.estimated_duration_mins)} min` : '1 min'} travel
-                  </p>
-                  <p className="text-xs font-bold text-amber-600">{formatCurrency(cus.pending_amount)} pending</p>
-                </div>
-
-                <Link
-                  href={`/map?customer_id=${cus.customer_id}&navigate=true`}
-                  className="py-1.5 px-3 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs flex items-center gap-1 shadow-sm transition-colors"
-                >
-                  <Navigation className="w-3.5 h-3.5" />
-                  <span>Navigate</span>
-                </Link>
+          {/* Card 5: OTHER (Other Category) */}
+          <button
+            type="button"
+            onClick={() => setStatusModalType('OTHER')}
+            className="bg-white border border-cyan-200/90 hover:border-cyan-400 p-4 rounded-xl shadow-2xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            title="Click to view all Other status consumers"
+          >
+            <div className="flex items-center justify-between">
+              <div className="w-8 h-8 rounded-lg bg-cyan-50 group-hover:bg-cyan-600 text-cyan-600 group-hover:text-white transition-colors flex items-center justify-center">
+                <Zap className="w-4 h-4" />
               </div>
-            ))}
-          </div>
-        )}
+              <span className="text-[10px] font-extrabold text-cyan-700 bg-cyan-50 group-hover:bg-cyan-100 px-2 py-0.5 rounded-full border border-cyan-200 transition-colors flex items-center gap-0.5">
+                View List <ChevronRight className="w-3 h-3 inline" />
+              </span>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500 group-hover:text-cyan-900 font-bold uppercase transition-colors">
+                OTHER (Other Meters)
+              </p>
+              <div className="flex items-baseline justify-between mt-1">
+                <span className="text-2xl font-black text-slate-900 group-hover:text-cyan-700 transition-colors">
+                  {metrics.other_customers_count || 0}
+                </span>
+                <span className="text-xs font-extrabold text-cyan-600">
+                  {formatCurrency(metrics.other_pending_amount || 0)}
+                </span>
+              </div>
+            </div>
+          </button>
+        </div>
       </div>
     </div>
   );

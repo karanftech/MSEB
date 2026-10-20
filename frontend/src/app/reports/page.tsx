@@ -128,7 +128,14 @@ export default function ReportsPage() {
       <div className="print:hidden grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* KPI 1: Consumers Visited */}
         <div className="bg-white border border-slate-200/80 p-5 rounded-xl shadow-2xs space-y-2">
-          <p className="text-xs font-bold text-slate-600 tracking-tight">Consumers Visited</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-bold text-slate-600 tracking-tight">Consumers Visited</p>
+            {data?.kpis?.total_visits_count !== undefined && data.kpis.total_visits_count > (data?.kpis?.consumers_visited_count ?? 0) && (
+              <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200" title="Total visit events logged across all consumers">
+                {data.kpis.total_visits_count} Visits
+              </span>
+            )}
+          </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-black text-slate-900">
               {data?.kpis.consumers_visited_count ?? 0}
