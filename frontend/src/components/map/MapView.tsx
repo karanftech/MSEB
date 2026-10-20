@@ -41,7 +41,8 @@ function buildConsumerMarkerHtml(
   priority: string | undefined,
   isSelected: boolean,
   sequence?: number,
-  meterNumber?: string
+  meterNumber?: string,
+  showBadge: boolean = true
 ): string {
   const colorMap: Record<string, string> = {
     overdue: '#ef4444',
@@ -52,7 +53,7 @@ function buildConsumerMarkerHtml(
   const priorityColor = priority === 'critical' ? '#dc2626' : priority === 'high' ? '#f97316' : null;
   const baseColor = isSelected ? '#0284c7' : priorityColor || colorMap[status] || '#64748b';
 
-  const meterText = meterNumber
+  const meterText = (showBadge && meterNumber)
     ? meterNumber.startsWith('MTR') ? meterNumber : `MTR-${meterNumber.slice(-6)}`
     : '';
 
@@ -60,14 +61,23 @@ function buildConsumerMarkerHtml(
     ? `<text x="17" y="23" text-anchor="middle" fill="#FFF" font-size="13" font-weight="900" font-family="system-ui, sans-serif">${sequence}</text>`
     : `<circle cx="17" cy="17" r="9" fill="#0F172A"/><path d="M16 9L11 18H16L15 25L21 15H16L17 9Z" fill="${baseColor}"/>`;
 
-  const badgeSvg = meterText
-    ? `<rect x="2" y="39" width="70" height="16" rx="4" fill="#0F172A" stroke="#FFF" stroke-width="1.5"/>
-       <text x="37" y="50.5" text-anchor="middle" fill="#FFF" font-size="8.5" font-weight="800" font-family="system-ui, sans-serif" letter-spacing="0.2">${meterText}</text>`
-    : '';
+  if (!meterText) {
+    return `
+      <div style="position: relative; width: 34px; height: 38px; cursor: pointer;">
+        <svg width="34" height="38" viewBox="0 0 34 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M17 0C7.611 0 0 7.611 0 17C0 29.75 17 38 17 38C17 38 34 29.75 34 17C34 7.611 26.389 0 17 0Z" fill="${baseColor}" stroke="#FFF" stroke-width="2"/>
+          ${pinInner}
+        </svg>
+      </div>
+    `;
+  }
 
-  const totalH = meterText ? 56 : 40;
+  const badgeSvg = `<rect x="2" y="39" width="70" height="16" rx="4" fill="#0F172A" stroke="#FFF" stroke-width="1.5"/>
+       <text x="37" y="50.5" text-anchor="middle" fill="#FFF" font-size="8.5" font-weight="800" font-family="system-ui, sans-serif" letter-spacing="0.2">${meterText}</text>`;
+
+  const totalH = 56;
   return `
-    <div style="position: relative; width: 74px; height: ${totalH}px; cursor: pointer; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+    <div style="position: relative; width: 74px; height: ${totalH}px; cursor: pointer;">
       <svg width="74" height="${totalH}" viewBox="0 0 74 ${totalH}" fill="none" xmlns="http://www.w3.org/2000/svg">
         <g transform="translate(20,0)">
           <path d="M17 0C7.611 0 0 7.611 0 17C0 29.75 17 38 17 38C17 38 34 29.75 34 17C34 7.611 26.389 0 17 0Z" fill="${baseColor}" stroke="#FFF" stroke-width="2"/>
@@ -77,6 +87,98 @@ function buildConsumerMarkerHtml(
       </svg>
     </div>
   `;
+}
+
+function buildClusterMarkerHtml(count: number, dominantStatus: string): string {
+  const isOverdue = dominantStatus === 'overdue';
+  const bg = isOverdue ? '#dc2626' : '#f59e0b';
+  const pulse = isOverdue ? 'rgba(239, 68, 68, 0.28)' : 'rgba(245, 158, 11, 0.28)';
+  return `
+    <div style="position: relative; width: 46px; height: 46px; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+      <div style="position: absolute; width: 44px; height: 44px; border-radius: 50%; background: ${pulse};"></div>
+      <div style="position: relative; width: 34px; height: 34px; border-radius: 50%; background: ${bg}; border: 2.5px solid #ffffff; box-shadow: 0 4px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-size: 13px; font-family: system-ui, sans-serif;">
+        ${count}
+      </div>
+    </div>
+  `;
+}
+
+interface MarkerClusterGroup {
+  id: string;
+  centerLat: number;
+  centerLng: number;
+  customers: Customer[];
+  dominantStatus: string;
+}
+
+function clusterCustomers(
+  customers: Customer[],
+  map: any,
+  selectedCustomerId?: string
+): { clusters: MarkerClusterGroup[]; singles: Customer[] } {
+  if (!map || typeof map.latLngToLayerPoint !== 'function') {
+    return { clusters: [], singles: customers };
+  }
+
+  const zoom = map.getZoom();
+  // When zoomed in to street level (zoom >= 17), show all individual markers
+  if (zoom >= 17 || customers.length < 2) {
+    return { clusters: [], singles: customers };
+  }
+
+  const clusters: MarkerClusterGroup[] = [];
+  const singles: Customer[] = [];
+  const clusterRadiusPixels = 48;
+
+  const items = customers.map((c) => ({
+    customer: c,
+    point: map.latLngToLayerPoint([c.latitude, c.longitude]),
+    used: false,
+  }));
+
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].used) continue;
+    const current = items[i];
+
+    // Never cluster the currently selected customer so popup & details remain open
+    if (current.customer.customer_id === selectedCustomerId) {
+      current.used = true;
+      singles.push(current.customer);
+      continue;
+    }
+
+    const group: Customer[] = [current.customer];
+    current.used = true;
+
+    for (let j = i + 1; j < items.length; j++) {
+      if (items[j].used) continue;
+      if (items[j].customer.customer_id === selectedCustomerId) continue;
+
+      const other = items[j];
+      const dist = Math.hypot(current.point.x - other.point.x, current.point.y - other.point.y);
+      if (dist < clusterRadiusPixels) {
+        group.push(other.customer);
+        other.used = true;
+      }
+    }
+
+    if (group.length > 1) {
+      const avgLat = group.reduce((sum, c) => sum + c.latitude, 0) / group.length;
+      const avgLng = group.reduce((sum, c) => sum + c.longitude, 0) / group.length;
+      const hasOverdue = group.some((c) => c.status === 'overdue' || c.priority === 'critical');
+      clusters.push({
+        id: `cluster-${Math.round(avgLat * 10000)}-${Math.round(avgLng * 10000)}-${group.length}`,
+        centerLat: avgLat,
+        centerLng: avgLng,
+        customers: group,
+        dominantStatus: hasOverdue ? 'overdue' : 'pending',
+      });
+    } else {
+      singles.push(current.customer);
+    }
+  }
+
+  return { clusters, singles };
 }
 
 function buildOfficerMarkerHtml(heading: number | null | undefined): string {
@@ -175,6 +277,7 @@ export default function MapView({
   const tileLayerRef = useRef<any>(null);
   const officerMarkerRef = useRef<any>(null);
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
+  const clusterMarkersRef = useRef<Map<string, any>>(new Map());
   const markerStateCacheRef = useRef<Map<string, string>>(new Map());
   const routePolylineCasingRef = useRef<any>(null);
   const routePolylineRef = useRef<any>(null);
@@ -184,6 +287,8 @@ export default function MapView({
   const [currentLayer, setCurrentLayer] = useState<MapLayerType>('roadmap');
   const [isFollowingInternal, setIsFollowingInternal] = useState<boolean>(false);
   const [currentBearing, setCurrentBearing] = useState<number>(officerHeading || 0);
+  const [currentZoom, setCurrentZoom] = useState<number>(16);
+  const [clusterTick, setClusterTick] = useState<number>(0);
   const [isMutedInternal, setIsMutedInternal] = useState<boolean>(false);
 
   const isMuted = isMutedProp !== undefined ? isMutedProp : isMutedInternal;
@@ -292,6 +397,16 @@ export default function MapView({
         map.on('dragstart', () => {
           if (onDisableFollow) onDisableFollow();
           setIsFollowingInternal(false);
+        });
+
+        // Track zoom and movement to dynamically compute marker clustering
+        map.on('zoomend', () => {
+          setCurrentZoom(map.getZoom());
+          setClusterTick((t) => t + 1);
+        });
+
+        map.on('moveend', () => {
+          setClusterTick((t) => t + 1);
         });
 
         // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
@@ -520,6 +635,10 @@ export default function MapView({
     return () => {
       isMounted = false;
       if (cleanUpTouchListeners) cleanUpTouchListeners();
+      clusterMarkersRef.current.forEach((marker) => {
+        if (leafletMapRef.current) leafletMapRef.current.removeLayer(marker);
+      });
+      clusterMarkersRef.current.clear();
       if (leafletMapRef.current) {
         leafletMapRef.current.remove();
         leafletMapRef.current = null;
@@ -559,6 +678,37 @@ export default function MapView({
     }
   };
 
+  // ── Recenter Camera (Smooth GPS Focus & True North 0°) ──────────────────────
+  const handleRecenter = useCallback(() => {
+    const map = leafletMapRef.current;
+    if (!map) return;
+
+    if (officerCoords) {
+      const pos: [number, number] = [officerCoords.latitude, officerCoords.longitude];
+      const targetZoom = Math.max(map.getZoom(), 16);
+      map.setView(pos, targetZoom, { animate: true });
+    }
+
+    // Always reset bearing to True North (0°) on recenter so the map is never upside down ("ulta")
+    if (typeof (map as any).setBearing === 'function') {
+      const pane = mapContainerRef.current?.querySelector('.leaflet-rotate-pane');
+      if (pane) {
+        pane.classList.add('leaflet-rotating-smooth');
+      }
+      (map as any).setBearing(0);
+      setCurrentBearing(0);
+      setTimeout(() => {
+        pane?.classList.remove('leaflet-rotating-smooth');
+      }, 400);
+    }
+
+    if (onToggleFollow) {
+      onToggleFollow();
+    } else {
+      setIsFollowingInternal((prev) => !prev);
+    }
+  }, [officerCoords, onToggleFollow]);
+
   // ── 4. Zoom Controls ─────────────────────────────────────────────────────────
   const handleZoomIn = () => leafletMapRef.current?.zoomIn();
   const handleZoomOut = () => leafletMapRef.current?.zoomOut();
@@ -582,7 +732,7 @@ export default function MapView({
     }
   }, [customers, officerCoords]);
 
-  // ── 6. Update Officer GPS Marker & Follow-Me with 360° Rotation ──────────────
+  // ── 6. Update Officer GPS Marker & Follow-Me Camera Tracking ─────────────────
   useEffect(() => {
     const L = LRef.current;
     const map = leafletMapRef.current;
@@ -604,42 +754,92 @@ export default function MapView({
       officerMarkerRef.current.setIcon(officerIcon);
     }
 
-    // Follow-Me & 360° Rotate bearing update
+    // Follow-Me camera tracking: keep centered smoothly on officer without inverting/rotating the map
     if (isFollowing) {
-      map.panTo(pos, { animate: true, duration: 0.5 });
-      if (typeof (map as any).setBearing === 'function' && officerHeading !== null && officerHeading !== undefined) {
-        (map as any).setBearing(officerHeading);
-        setCurrentBearing(officerHeading);
-      }
+      map.panTo(pos, { animate: true, duration: 0.4 });
+      // NOTE: We intentionally do NOT call map.setBearing(officerHeading).
+      // Sensor compasses often report south (180°) which inverts the map ("ulta"),
+      // and continuous map rotations cause heavy GPU/DOM lag.
+      // The officer marker's directional arrow already rotates to show the officer's heading.
     }
   }, [mapReady, officerCoords, officerHeading, isFollowing]);
 
-  // ── 7. Render Consumer Markers & Popups ───────────────────────────────────────
+  // ── 7. Render Consumer Markers, Dynamic Clustering & Popups ──────────────────
   useEffect(() => {
     const L = LRef.current;
     const map = leafletMapRef.current;
     if (!map || !L) return;
 
-    const currentIds = new Set(customers.map((c) => c.customer_id));
+    // Filter valid coordinates
+    const validCustomers = customers.filter(
+      (c) => c.latitude && c.longitude && !isNaN(c.latitude) && !isNaN(c.longitude)
+    );
 
-    // Remove stale markers
+    // Group close-by customers into clusters when dense or zoomed out
+    const { clusters, singles } = clusterCustomers(validCustomers, map, selectedCustomer?.customer_id);
+
+    // ── A. Manage Cluster Group Markers ────────────────────────
+    const activeClusterIds = new Set(clusters.map((c) => c.id));
+    clusterMarkersRef.current.forEach((marker, id) => {
+      if (!activeClusterIds.has(id)) {
+        map.removeLayer(marker);
+        clusterMarkersRef.current.delete(id);
+      }
+    });
+
+    clusters.forEach((cluster) => {
+      let marker = clusterMarkersRef.current.get(cluster.id);
+      const pos: [number, number] = [cluster.centerLat, cluster.centerLng];
+      const clusterHtml = buildClusterMarkerHtml(cluster.customers.length, cluster.dominantStatus);
+      const icon = L.divIcon({
+        html: clusterHtml,
+        className: 'cluster-marker-div',
+        iconSize: [46, 46],
+        iconAnchor: [23, 23],
+      });
+
+      if (marker) {
+        marker.setLatLng(pos);
+        marker.setIcon(icon);
+      } else {
+        marker = L.marker(pos, { icon, zIndexOffset: 500 }).addTo(map);
+        marker.on('click', () => {
+          if (cluster.customers.length > 0 && typeof map.fitBounds === 'function') {
+            const lls = cluster.customers.map((c) => [c.latitude, c.longitude]);
+            const bounds = L.latLngBounds(lls);
+            const targetZoom = map.getBoundsZoom(bounds);
+            if (targetZoom && targetZoom > map.getZoom() && targetZoom <= 18) {
+              map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+            } else {
+              map.setView(pos, Math.min(map.getZoom() + 2, 18), { animate: true });
+            }
+          } else {
+            map.setView(pos, Math.min(map.getZoom() + 2, 18), { animate: true });
+          }
+        });
+        clusterMarkersRef.current.set(cluster.id, marker);
+      }
+    });
+
+    // ── B. Manage Individual Consumer Markers ───────────────────
+    const activeSingleIds = new Set(singles.map((c) => c.customer_id));
     customerMarkersRef.current.forEach((marker, id) => {
-      if (!currentIds.has(id)) {
+      if (!activeSingleIds.has(id)) {
         map.removeLayer(marker);
         customerMarkersRef.current.delete(id);
         markerStateCacheRef.current.delete(id);
       }
     });
 
-    customers.forEach((customer) => {
-      if (!customer.latitude || !customer.longitude) return;
-
+    singles.forEach((customer) => {
       const isSelected = selectedCustomer?.customer_id === customer.customer_id;
       const multiStop = multiRoute?.stops?.find((s) => s.customer_id === customer.customer_id);
       const isCurrentStop = multiStop && (multiStop.sequence - 1) === activeStopIndex;
+      // Show full meter text badge only when zoomed in to street level (>= 17) or actively selected
+      const showBadge = currentZoom >= 17 || isSelected || !!isCurrentStop;
       const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
 
-      const stateKey = `${customer.customer_id}:${customer.status}:${customer.priority}:${isSelected}:${isCurrentStop}:${multiStop?.sequence}:${customer.meter_number}:${customer.pending_amount}:${rawPendingDays}`;
+      const stateKey = `${customer.customer_id}:${customer.status}:${customer.priority}:${isSelected}:${isCurrentStop}:${multiStop?.sequence}:${customer.meter_number}:${showBadge}:${customer.pending_amount}:${rawPendingDays}`;
       let marker = customerMarkersRef.current.get(customer.customer_id);
 
       // Fast-path: if marker already exists and its visual state is identical, skip DOM icon rebuild
@@ -657,14 +857,15 @@ export default function MapView({
         customer.priority,
         isSelected || !!isCurrentStop,
         multiStop?.sequence,
-        customer.meter_number
+        customer.meter_number,
+        showBadge
       );
 
       const icon = L.divIcon({
         html: markerHtml,
         className: 'customer-marker-div',
-        iconSize: [74, customer.meter_number ? 56 : 40],
-        iconAnchor: [37, 38],
+        iconSize: [showBadge ? 74 : 34, showBadge && customer.meter_number ? 56 : 38],
+        iconAnchor: [showBadge ? 37 : 17, 38],
       });
 
       const pos: [number, number] = [customer.latitude, customer.longitude];
@@ -756,7 +957,7 @@ export default function MapView({
         marker.openPopup();
       }
     });
-  }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment]);
+  }, [mapReady, customers, selectedCustomer, multiRoute, activeStopIndex, isMuted, onSelectCustomer, onCollectPayment, currentZoom, clusterTick]);
 
   // ── 8. Draw OSRM Polyline Routes on Leaflet ──────────────────────────────────
   useEffect(() => {
@@ -841,7 +1042,7 @@ export default function MapView({
           officerHeading={currentBearing}
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
-          onToggleFollow={onToggleFollow || (() => setIsFollowingInternal((prev) => !prev))}
+          onToggleFollow={handleRecenter}
           onSelectLayer={handleSelectLayer}
           onFitBounds={handleFitBounds}
           onResetNorth={handleResetNorth}
