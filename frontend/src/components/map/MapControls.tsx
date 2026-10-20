@@ -231,7 +231,7 @@ export default function MapControls({
   const totalActions = actions.length;
 
   return (
-    <div ref={menuRef} className="fixed bottom-20 right-4 md:bottom-6 md:right-6 flex flex-col items-center gap-2.5 z-[60] select-none">
+    <div ref={menuRef} className="flex flex-col items-center gap-2.5 select-none relative">
       
       {/* 1. Staggered Floating Circular Icons Stack (Shoots Upward Separately) */}
       <div className="flex flex-col items-center gap-2">

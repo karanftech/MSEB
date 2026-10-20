@@ -298,13 +298,13 @@ export const routeService = {
           origin,
           customers: targetCustomers.map((c) => ({
             customer_id: c.customer_id,
-            name: c.name,
-            meter_number: c.meter_number,
+            name: c.name || 'Consumer',
+            meter_number: c.meter_number || '',
             latitude: c.latitude,
             longitude: c.longitude,
-            pending_amount: c.pending_amount,
-            address: c.address,
-            priority: c.priority,
+            pending_amount: c.pending_amount ?? 0,
+            address: c.address || '',
+            priority: c.priority || 'normal',
           })),
         },
         { timeout: 12000 }
@@ -380,7 +380,6 @@ export const routeService = {
 
     // 2. Batch points in groups of up to 20 coordinates and query OSRM in a SINGLE request per batch
     const BATCH_SIZE = 20;
-    let routedViaOSRM = false;
 
     for (let b = 0; b < allPoints.length - 1; b += (BATCH_SIZE - 1)) {
       const batchPoints = allPoints.slice(b, b + BATCH_SIZE);
@@ -442,7 +441,6 @@ export const routeService = {
             }
 
             batchSuccess = true;
-            routedViaOSRM = true;
             break;
           }
         } catch (e) {

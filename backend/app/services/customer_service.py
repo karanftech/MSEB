@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, func, cast, text
 from geoalchemy2 import Geography
-from typing import List, Optional
+from typing import Any, List, Optional, Union
 from collections import defaultdict
 
 from app.models.customer import Customer
@@ -19,7 +19,7 @@ class CustomerService:
         longitude: float,
         radius_meters: float = 5000.0,
         status_filter: Optional[str] = None,
-        officer_id: Optional[str] = None,
+        officer_id: Optional[Union[str, List[Any]]] = None,
         limit: int = 15,
     ) -> List[NearbyCustomerResponse]:
         """
@@ -40,7 +40,7 @@ class CustomerService:
 
         stmt = select(Customer, dist_expr)
 
-        conditions = [
+        conditions: List[Any] = [
             Customer.latitude != 0.0,
             Customer.longitude != 0.0
         ]

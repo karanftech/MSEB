@@ -313,7 +313,7 @@ class MapsService:
         curr_lat, curr_lng = origin_lat, origin_lng
 
         while unvisited:
-            best_idx = None
+            best_idx = unvisited[0]
             best_dist = float('inf')
             for idx in unvisited:
                 c = customers[idx]
@@ -361,9 +361,12 @@ class MapsService:
         full_coords_path: List[Coordinates] = []
         stops: List[MultiRouteStop] = []
 
+        base = settings.OSRM_BASE_URL.rstrip('/')
+        configured_srv = f"{base}/route/v1/driving" if not base.endswith("/route/v1/driving") else base
+
         osrm_servers = [
             "https://routing.openstreetmap.de/routed-car/route/v1/driving",
-            settings.OSRM_BASE_URL.rstrip('/'),
+            configured_srv,
             "https://router.project-osrm.org/route/v1/driving",
         ]
 
@@ -407,9 +410,9 @@ class MapsService:
                                             MultiRouteStop(
                                                 sequence=stop_idx + 1,
                                                 customer_id=cust.customer_id,
-                                                name=cust.name,
-                                                meter_number=cust.meter_number,
-                                                pending_amount=cust.pending_amount,
+                                                name=cust.name or "Consumer",
+                                                meter_number=cust.meter_number or "",
+                                                pending_amount=float(cust.pending_amount or 0.0),
                                                 address=cust.address or "",
                                                 latitude=cust.latitude,
                                                 longitude=cust.longitude,
@@ -451,9 +454,9 @@ class MapsService:
                                 MultiRouteStop(
                                     sequence=stop_idx + 1,
                                     customer_id=cust.customer_id,
-                                    name=cust.name,
-                                    meter_number=cust.meter_number,
-                                    pending_amount=cust.pending_amount,
+                                    name=cust.name or "Consumer",
+                                    meter_number=cust.meter_number or "",
+                                    pending_amount=float(cust.pending_amount or 0.0),
                                     address=cust.address or "",
                                     latitude=cust.latitude,
                                     longitude=cust.longitude,
@@ -462,6 +465,31 @@ class MapsService:
                                     duration_from_prev_text=dur_text
                                 )
                             )
+
+        # Ensure all stops from the tour are populated
+        existing_stop_ids = {s.customer_id for s in stops}
+        for idx_in_tour, cust_idx in enumerate(tour):
+            cust = customers[cust_idx]
+            if cust.customer_id not in existing_stop_ids:
+                prev_lat = origin_lat if idx_in_tour == 0 else customers[tour[idx_in_tour - 1]].latitude
+                prev_lng = origin_lng if idx_in_tour == 0 else customers[tour[idx_in_tour - 1]].longitude
+                air_d = haversine_distance(prev_lat, prev_lng, cust.latitude, cust.longitude) * 1.35
+                d_text = f"{air_d / 1000.0:.2f} km" if air_d >= 1000 else f"{int(air_d)} m"
+                stops.append(
+                    MultiRouteStop(
+                        sequence=len(stops) + 1,
+                        customer_id=cust.customer_id,
+                        name=cust.name or "Consumer",
+                        meter_number=cust.meter_number or "",
+                        pending_amount=float(cust.pending_amount or 0.0),
+                        address=cust.address or "",
+                        latitude=cust.latitude,
+                        longitude=cust.longitude,
+                        distance_from_prev_meters=round(air_d, 1),
+                        distance_from_prev_text=d_text,
+                        duration_from_prev_text="< 1 min"
+                    )
+                )
 
         total_dist_text = f"{total_distance / 1000.0:.2f} km" if total_distance >= 1000 else f"{int(total_distance)} m"
         total_dur_text = f"{int(total_duration // 60)} min" if total_duration >= 60 else "< 1 min"

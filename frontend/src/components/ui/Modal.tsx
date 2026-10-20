@@ -29,9 +29,13 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 'ma
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in"
+      onClick={onClose}
+    >
       <div
         className={`bg-white border border-slate-200 rounded-lg w-full ${maxWidth} overflow-hidden shadow-xl text-slate-900 flex flex-col max-h-[90vh]`}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
           <h3 className="text-base font-bold text-slate-900">{title}</h3>

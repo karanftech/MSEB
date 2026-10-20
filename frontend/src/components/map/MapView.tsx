@@ -188,7 +188,6 @@ export default function MapView({
   const tileLayerRef = useRef<any>(null);
   const officerMarkerRef = useRef<any>(null);
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
-  const clusterMarkersRef = useRef<Map<string, any>>(new Map());
   const markerStateCacheRef = useRef<Map<string, string>>(new Map());
   const routePolylineCasingRef = useRef<any>(null);
   const routePolylineRef = useRef<any>(null);
@@ -198,8 +197,6 @@ export default function MapView({
   const [currentLayer, setCurrentLayer] = useState<MapLayerType>('roadmap');
   const [isFollowingInternal, setIsFollowingInternal] = useState<boolean>(false);
   const [currentBearing, setCurrentBearing] = useState<number>(officerHeading || 0);
-  const [currentZoom, setCurrentZoom] = useState<number>(16);
-  const [clusterTick, setClusterTick] = useState<number>(0);
   const [isMutedInternal, setIsMutedInternal] = useState<boolean>(false);
 
   const isMuted = isMutedProp !== undefined ? isMutedProp : isMutedInternal;
@@ -308,16 +305,6 @@ export default function MapView({
         map.on('dragstart', () => {
           if (onDisableFollow) onDisableFollow();
           setIsFollowingInternal(false);
-        });
-
-        // Track zoom and movement to dynamically compute marker clustering
-        map.on('zoomend', () => {
-          setCurrentZoom(map.getZoom());
-          setClusterTick((t) => t + 1);
-        });
-
-        map.on('moveend', () => {
-          setClusterTick((t) => t + 1);
         });
 
         // ── Ultra-Smooth 2-Finger Touch Rotation (Google Maps LERP Pipeline) ──
@@ -546,10 +533,6 @@ export default function MapView({
     return () => {
       isMounted = false;
       if (cleanUpTouchListeners) cleanUpTouchListeners();
-      clusterMarkersRef.current.forEach((marker) => {
-        if (leafletMapRef.current) leafletMapRef.current.removeLayer(marker);
-      });
-      clusterMarkersRef.current.clear();
       if (leafletMapRef.current) {
         leafletMapRef.current.remove();
         leafletMapRef.current = null;
@@ -680,12 +663,6 @@ export default function MapView({
     const L = LRef.current;
     const map = leafletMapRef.current;
     if (!map || !L) return;
-
-    // Remove any leftover cluster markers
-    clusterMarkersRef.current.forEach((marker) => {
-      map.removeLayer(marker);
-    });
-    clusterMarkersRef.current.clear();
 
     // Filter valid coordinates
     const validCustomers = customers.filter(
@@ -892,7 +869,7 @@ export default function MapView({
       />
 
       {/* Floating 360° Compass & Map Controls */}
-      <div className="absolute right-4 bottom-6 z-20 flex flex-col items-end gap-2">
+      <div className="fixed right-4 bottom-20 md:bottom-6 md:right-6 z-[60] flex flex-col items-center gap-2.5">
         {/* Quick Reset North Compass Button: automatically appears whenever the map is rotated */}
         {Math.round(currentBearing || 0) % 360 !== 0 && (
           <button

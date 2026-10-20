@@ -31,11 +31,11 @@ class RouteCalculationResponse(BaseModel):
 
 class MultiRouteCustomerInput(BaseModel):
     customer_id: str
-    name: str
-    meter_number: str
+    name: Optional[str] = "Consumer"
+    meter_number: Optional[str] = ""
     latitude: float
     longitude: float
-    pending_amount: float = 0.0
+    pending_amount: Optional[float] = 0.0
     address: Optional[str] = ""
     priority: Optional[str] = "normal"
 
@@ -46,10 +46,10 @@ class MultiRouteCalculationRequest(BaseModel):
 class MultiRouteStop(BaseModel):
     sequence: int
     customer_id: str
-    name: str
-    meter_number: str
-    pending_amount: float
-    address: str
+    name: Optional[str] = "Consumer"
+    meter_number: Optional[str] = ""
+    pending_amount: Optional[float] = 0.0
+    address: Optional[str] = ""
     latitude: float
     longitude: float
     distance_from_prev_meters: float
