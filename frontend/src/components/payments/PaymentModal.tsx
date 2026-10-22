@@ -29,7 +29,7 @@ export default function PaymentModal({
   const { isOnline, refreshQueueCount } = useOffline();
 
   const [collectedAmount, setCollectedAmount] = useState<string>('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('td');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('other');
   const [remarks, setRemarks] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isConfirmOpen, setIsConfirmOpen] = useState<boolean>(false);
@@ -45,7 +45,7 @@ export default function PaymentModal({
       );
       setError(null);
       setRemarks('');
-      setPaymentMethod('td');
+      setPaymentMethod('other');
       setIsConfirmOpen(false);
     }
   }, [customer, isOpen]);
@@ -65,11 +65,11 @@ export default function PaymentModal({
       : 0;
 
   const paymentMethodsList = [
+    { key: 'other' as const, label: 'Normally Connected', desc: 'Active connected meter' },
     { key: 'td' as const, label: 'TD', desc: 'Temporary Disconnection' },
     { key: 'pd' as const, label: 'PD', desc: 'Permanent Disconnection' },
     { key: 'bur' as const, label: 'BUR', desc: 'Bill Under Review' },
-    { key: 'dis' as const, label: 'DIS', desc: 'Disconnected' },
-    { key: 'other' as const, label: 'OTHER', desc: 'Other Action / Status' },
+    { key: 'dis' as const, label: 'DIS', desc: 'Dispute' },
   ];
 
   const handlePreSubmit = (e: React.FormEvent) => {
@@ -259,9 +259,9 @@ export default function PaymentModal({
               <ChevronDown className="w-4 h-4" />
             </div>
           </div>
-          {paymentMethod === 'other' && (
-            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 mt-2">
-              Please enter details of the other action or status in the Remarks field below.
+          {paymentMethod === 'dis' && (
+            <p className="text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-2.5 py-1.5 mt-2 font-medium">
+              Dispute mode: You can enter consumer dispute observations in the Remarks field below.
             </p>
           )}
         </div>

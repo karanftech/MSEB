@@ -99,6 +99,28 @@ async def get_officer_dashboard(
         other_count = stats_row[12] or 0 if stats_row else 0
         other_amount = float(stats_row[13] or 0.0) if stats_row else 0.0
 
+        # Category collection stats
+        is_pmt_td = or_(Payment.disconnection_status.ilike("TD"), Payment.payment_method.ilike("TD"))
+        is_pmt_pd = or_(Payment.disconnection_status.ilike("PD"), Payment.payment_method.ilike("PD"))
+        is_pmt_bur = or_(Payment.disconnection_status.ilike("BUR"), Payment.payment_method.ilike("BUR"))
+        is_pmt_dis = or_(Payment.disconnection_status.ilike("DIS"), Payment.payment_method.ilike("DIS"))
+        is_pmt_other = or_(Payment.disconnection_status.ilike("OTHER"), Payment.payment_method.ilike("OTHER"))
+
+        pmt_stats_stmt = select(
+            func.coalesce(func.sum(case((is_pmt_td, Payment.amount), else_=0.0)), 0.0).label("td_collected"),
+            func.coalesce(func.sum(case((is_pmt_pd, Payment.amount), else_=0.0)), 0.0).label("pd_collected"),
+            func.coalesce(func.sum(case((is_pmt_bur, Payment.amount), else_=0.0)), 0.0).label("bur_collected"),
+            func.coalesce(func.sum(case((is_pmt_dis, Payment.amount), else_=0.0)), 0.0).label("dis_collected"),
+            func.coalesce(func.sum(case((is_pmt_other, Payment.amount), else_=0.0)), 0.0).label("other_collected"),
+        ).where(Payment.officer_id.in_(filter_ids))
+        pmt_stats_row = (await db.execute(pmt_stats_stmt)).first()
+
+        td_collected = float(pmt_stats_row[0] or 0.0) if pmt_stats_row else 0.0
+        pd_collected = float(pmt_stats_row[1] or 0.0) if pmt_stats_row else 0.0
+        bur_collected = float(pmt_stats_row[2] or 0.0) if pmt_stats_row else 0.0
+        dis_collected = float(pmt_stats_row[3] or 0.0) if pmt_stats_row else 0.0
+        other_collected = float(pmt_stats_row[4] or 0.0) if pmt_stats_row else 0.0
+
         # Today's collected amount & count
         pmt_conds = [
             Payment.created_at.like(f"{today_date_str}%"),
@@ -139,14 +161,19 @@ async def get_officer_dashboard(
             remaining_collections_amount=round(remaining_collections_amount, 2),
             td_customers_count=td_count,
             td_pending_amount=round(td_amount, 2),
+            td_collected_amount=round(td_collected, 2),
             pd_customers_count=pd_count,
             pd_pending_amount=round(pd_amount, 2),
+            pd_collected_amount=round(pd_collected, 2),
             bur_customers_count=bur_count,
             bur_pending_amount=round(bur_amount, 2),
+            bur_collected_amount=round(bur_collected, 2),
             dis_customers_count=dis_count,
             dis_pending_amount=round(dis_amount, 2),
+            dis_collected_amount=round(dis_collected, 2),
             other_customers_count=other_count,
             other_pending_amount=round(other_amount, 2),
+            other_collected_amount=round(other_collected, 2),
             nearby_pending_customers=nearby
         )
         await cache_service.set(cache_key, metrics.model_dump(), ttl=60)

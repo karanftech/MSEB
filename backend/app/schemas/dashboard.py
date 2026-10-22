@@ -13,13 +13,19 @@ class OfficerDashboardMetrics(BaseModel):
     remaining_collections_amount: float
     td_customers_count: int = 0
     td_pending_amount: float = 0.0
+    td_collected_amount: float = 0.0
     pd_customers_count: int = 0
     pd_pending_amount: float = 0.0
+    pd_collected_amount: float = 0.0
     bur_customers_count: int = 0
     bur_pending_amount: float = 0.0
+    bur_collected_amount: float = 0.0
     dis_customers_count: int = 0
     dis_pending_amount: float = 0.0
+    dis_collected_amount: float = 0.0
     other_customers_count: int = 0
     other_pending_amount: float = 0.0
+    other_collected_amount: float = 0.0
     nearby_pending_customers: List[NearbyCustomerResponse] = []
+
 

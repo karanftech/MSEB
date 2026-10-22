@@ -1,11 +1,20 @@
 'use client';
 
 import React, { useEffect, useState, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
-import MapView from '@/components/map/MapView';
 import MapFilters from '@/components/map/MapFilters';
 import PaymentModal from '@/components/payments/PaymentModal';
 import ReceiptView from '@/components/payments/ReceiptView';
+
+const MapView = dynamic(() => import('@/components/map/MapView'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center w-full h-full bg-slate-950">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-500"></div>
+    </div>
+  ),
+});
 
 
 import {
@@ -148,7 +157,6 @@ function MapPageContent() {
     return filteredCustomers.filter(
       (c) =>
         c.status !== 'paid' &&
-        (c.pending_amount === undefined || c.pending_amount > 0) &&
         !temporarilyRemovedCustomerIds.has(c.customer_id)
     );
   }, [filteredCustomers, temporarilyRemovedCustomerIds]);
@@ -491,10 +499,24 @@ function MapPageContent() {
 }
 
 export default function MapPage() {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-950">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-500"></div>
+      </div>
+    );
+  }
+
   return (
     <React.Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen">
+        <div className="flex items-center justify-center min-h-screen bg-slate-950">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-500"></div>
         </div>
       }

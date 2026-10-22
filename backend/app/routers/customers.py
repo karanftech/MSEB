@@ -10,6 +10,7 @@ from app.database import get_db, point_wkt
 from app.models.customer import Customer
 from app.models.meter import Meter
 from app.models.officer import Officer
+from app.models.payment import Payment
 from app.schemas.customer import (
     CustomerCreate,
     CustomerUpdate,
@@ -202,10 +203,17 @@ async def list_customers(
     if not customers_docs:
         return []
 
-    # Batch fetch meters
+    # Batch fetch meters and payments
     customer_ids = [c.customer_id for c in customers_docs if c.customer_id]
     m_stmt = select(Meter).where(Meter.customer_id.in_(customer_ids))
     all_meters_docs = (await db.execute(m_stmt)).scalars().all()
+
+    # Batch fetch payments for accurate per-customer collected amounts
+    p_stmt = select(
+        Payment.customer_id,
+        func.coalesce(func.sum(Payment.amount), 0.0)
+    ).where(Payment.customer_id.in_(customer_ids)).group_by(Payment.customer_id)
+    payments_by_cust = dict((await db.execute(p_stmt)).all())
 
     meters_by_customer = defaultdict(list)
     for m in all_meters_docs:
@@ -257,6 +265,7 @@ async def list_customers(
                 dtc_code=c_dtc,
                 disconnection_status=cus.disconnection_status,
                 pending_amount=float(cus.pending_amount or 0.0),
+                collected_amount=float(payments_by_cust.get(cus.customer_id, 0.0)),
                 due_date=cus.due_date,
                 pending_days=cus.pending_days,
                 status=cus.status or "pending",

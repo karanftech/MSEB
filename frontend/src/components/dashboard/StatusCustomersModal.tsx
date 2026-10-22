@@ -17,12 +17,14 @@ import {
 import Modal from '@/components/ui/Modal';
 import { Customer } from '@/types';
 import { customerService } from '@/services/customerService';
+import { paymentService } from '@/services/paymentService';
 import { formatCurrency, formatDate, getOverdueDays } from '@/utils/formatters';
 
 interface StatusCustomersModalProps {
   isOpen: boolean;
   onClose: () => void;
   statusType: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null;
+  collectedAmount?: number;
   onCollectPayment?: (customer: Customer) => void;
 }
 
@@ -55,16 +57,16 @@ const STATUS_CONFIG: Record<
     icon: FileText,
   },
   DIS: {
-    label: 'DIS',
-    fullTitle: 'Normal Disconnected (DIS) Meters',
+    label: 'Dispute',
+    fullTitle: 'Dispute (DIS) Meters',
     color: 'text-indigo-700',
     bg: 'bg-indigo-50',
     border: 'border-indigo-300',
     icon: PowerOff,
   },
   OTHER: {
-    label: 'OTHER',
-    fullTitle: 'Other Status Consumers',
+    label: 'Normally Connected',
+    fullTitle: 'Normally Connected Meters',
     color: 'text-cyan-700',
     bg: 'bg-cyan-50',
     border: 'border-cyan-300',
@@ -76,9 +78,11 @@ export default function StatusCustomersModal({
   isOpen,
   onClose,
   statusType,
+  collectedAmount,
   onCollectPayment,
 }: StatusCustomersModalProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [paymentsMap, setPaymentsMap] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -97,8 +101,12 @@ export default function StatusCustomersModal({
     if (!statusType) return;
     setLoading(true);
     try {
-      // Fetch all customers for officer and filter by disconnection_status or status
-      const data = await customerService.getCustomers();
+      // Fetch customers and payments to accurately calculate per-customer collected money
+      const [data, payments] = await Promise.all([
+        customerService.getCustomers(),
+        paymentService.getPayments({ limit: 500 }).catch(() => [])
+      ]);
+
       const safeData = Array.isArray(data) ? data : [];
       const filtered = safeData.filter((c) => {
         const ds = (c.disconnection_status || '').toUpperCase().trim();
@@ -107,6 +115,14 @@ export default function StatusCustomersModal({
         return ds === target || st === target;
       });
       setCustomers(filtered);
+
+      const pMap: Record<string, number> = {};
+      (Array.isArray(payments) ? payments : []).forEach((p) => {
+        const amt = Number(p.amount || 0);
+        if (p.customer_id) pMap[p.customer_id] = (pMap[p.customer_id] || 0) + amt;
+        if (p.meter_number) pMap[p.meter_number] = (pMap[p.meter_number] || 0) + amt;
+      });
+      setPaymentsMap(pMap);
     } catch (err) {
       console.error('Failed to load status customers', err);
     } finally {
@@ -138,12 +154,22 @@ export default function StatusCustomersModal({
     return filteredList.reduce((acc, c) => acc + (c.pending_amount || 0), 0);
   }, [filteredList]);
 
+  // Exact collected money of these consumers only
+  const totalCollected = useMemo(() => {
+    const sum = filteredList.reduce((acc, c) => {
+      const direct = Number(c.collected_amount || 0);
+      const fromPmt = Number(paymentsMap[c.customer_id] || (c.meter_number ? paymentsMap[c.meter_number] : 0) || 0);
+      return acc + (direct > 0 ? direct : fromPmt);
+    }, 0);
+    return sum > 0 ? sum : (collectedAmount || 0);
+  }, [filteredList, paymentsMap, collectedAmount]);
+
   if (!isOpen || !statusType) return null;
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={config.fullTitle} maxWidth="max-w-3xl">
       <div className="space-y-4">
-        {/* Banner with Category Specs */}
+        {/* Banner with Category Specs & Total Outstanding / Total Collected */}
         <div className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${config.bg} ${config.border}`}>
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl bg-white shadow-2xs flex items-center justify-center shrink-0 ${config.color}`}>
@@ -152,7 +178,7 @@ export default function StatusCustomersModal({
             <div>
               <div className="flex items-center gap-2">
                 <span className={`px-2 py-0.5 rounded text-[11px] font-black uppercase tracking-wider bg-white border ${config.border} ${config.color}`}>
-                  {statusType} List
+                  {config.label} List
                 </span>
                 <span className="text-xs font-bold text-slate-700">
                   {filteredList.length} Consumer{filteredList.length === 1 ? '' : 's'}
@@ -164,11 +190,19 @@ export default function StatusCustomersModal({
             </div>
           </div>
 
-          <div className="text-right shrink-0">
-            <span className="text-[10px] uppercase font-bold text-slate-500 block">Total Outstanding</span>
-            <span className={`text-xl font-extrabold ${config.color}`}>
-              {formatCurrency(totalAmount)}
-            </span>
+          <div className="flex items-center gap-5 text-right shrink-0">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-slate-500 block">Total Collected</span>
+              <span className="text-xl font-extrabold text-emerald-600">
+                {formatCurrency(totalCollected)}
+              </span>
+            </div>
+            <div className="pl-4 border-l border-slate-300">
+              <span className="text-[10px] uppercase font-bold text-slate-500 block">Total Outstanding</span>
+              <span className={`text-xl font-extrabold ${config.color}`}>
+                {formatCurrency(totalAmount)}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -224,6 +258,10 @@ export default function StatusCustomersModal({
           <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
             {filteredList.map((cus) => {
               const overdueDays = getOverdueDays(cus.due_date);
+              const cusCollected = Number(cus.collected_amount || 0) > 0
+                ? Number(cus.collected_amount)
+                : Number(paymentsMap[cus.customer_id] || (cus.meter_number ? paymentsMap[cus.meter_number] : 0) || 0);
+
               return (
                 <div
                   key={cus.customer_id}
@@ -260,10 +298,19 @@ export default function StatusCustomersModal({
                       <span>{cus.address}</span>
                     </p>
 
-                    <div className="flex items-center gap-2 pt-0.5">
-                      <span className="font-black text-amber-700 text-xs">
-                        {formatCurrency(cus.pending_amount)} Pending
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <span className="font-black text-emerald-700 text-xs bg-emerald-50 px-2.5 py-0.5 rounded-md border border-emerald-200 shadow-2xs">
+                        {formatCurrency(cusCollected)} Collected
                       </span>
+                      {cus.pending_amount > 0 ? (
+                        <span className="font-bold text-amber-700 text-xs bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                          {formatCurrency(cus.pending_amount)} Pending
+                        </span>
+                      ) : (
+                        <span className="font-semibold text-slate-400 text-xs">
+                          ₹0 Pending
+                        </span>
+                      )}
                       <span className="text-slate-300">•</span>
                       <span className="text-[11px] text-slate-500 flex items-center gap-1">
                         <Clock className="w-3 h-3 text-slate-400" />

@@ -80,10 +80,14 @@ function buildConsumerMarkerHtml(
 
   // Small compact icon for ALL meters on the map (clean, clutter-free, high-performance)
   const isNumbered = sequence !== undefined;
-  const size = isNumbered ? 22 : 18;
+  const isTripleDigit = isNumbered && sequence > 99;
+  const size = isNumbered ? (isTripleDigit ? 24 : 22) : 18;
+  const fontSize = isNumbered ? (isTripleDigit ? '8.5px' : '10px') : '8px';
+  const letterSpacing = isTripleDigit ? '-0.5px' : 'normal';
+
   return `
     <div style="position: relative; width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.15s ease-out;">
-      <div style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${baseColor}; border: 2px solid #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-family: system-ui, sans-serif; font-size: ${isNumbered ? '10px' : '8px'};">
+      <div style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${baseColor}; border: 2px solid #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-family: system-ui, sans-serif; font-size: ${fontSize}; letter-spacing: ${letterSpacing};">
         ${isNumbered
           ? sequence
           : `<svg width="8" height="8" viewBox="0 0 24 24" fill="#ffffff"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`}
@@ -686,7 +690,7 @@ export default function MapView({
       const isCurrentStop = multiStop && (multiStop.sequence - 1) === activeStopIndex;
       const isHighlighted = isSelected || !!isCurrentStop;
       const isNumbered = multiStop?.sequence !== undefined;
-      const size = isNumbered ? 22 : 18;
+      const size = isNumbered ? (multiStop.sequence > 99 ? 24 : 22) : 18;
       const rawPendingDays = customer.pending_days ?? (customer as any)['pending days'] ?? (customer as any).days;
 
       const stateKey = `${customer.customer_id}:${customer.status}:${customer.priority}:${isHighlighted}:${multiStop?.sequence}:${customer.meter_number}:${customer.pending_amount}:${rawPendingDays}`;

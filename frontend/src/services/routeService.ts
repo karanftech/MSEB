@@ -260,7 +260,7 @@ export const routeService = {
     customers: Customer[]
   ): Promise<MultiRouteCalculationResult> {
     const pendingCustomers = customers.filter(
-      (c) => c.status !== 'paid' && (c.pending_amount === undefined || c.pending_amount > 0)
+      (c) => c.status !== 'paid'
     );
 
     if (pendingCustomers.length === 0) {
@@ -274,16 +274,8 @@ export const routeService = {
       };
     }
 
-    // Route up to 100 pending consumers to connect all meters in the ward/DTC
-    const targetCustomers = pendingCustomers.length > 100
-      ? [...pendingCustomers]
-          .sort((a, b) => {
-            const da = calculateHaversineDistance(origin.latitude, origin.longitude, a.latitude, a.longitude);
-            const db = calculateHaversineDistance(origin.latitude, origin.longitude, b.latitude, b.longitude);
-            return da - db;
-          })
-          .slice(0, 100)
-      : pendingCustomers;
+    // Connect all pending consumers in the ward/DTC without truncation
+    const targetCustomers = pendingCustomers;
 
     const cacheKey = `${origin.latitude.toFixed(4)},${origin.longitude.toFixed(4)}::${targetCustomers.map((c) => c.customer_id).sort().join(',')}`;
     const cached = multiRouteCache.get(cacheKey);
@@ -491,12 +483,27 @@ export const routeService = {
       }
     }
 
-    // Ensure all stops are populated
+    // Ensure all stops are populated and polyline connects to every stop
     for (let i = 0; i < orderedCustomers.length; i++) {
       if (!stops[i]) {
         const cust = orderedCustomers[i];
         const prev = i === 0 ? origin : { latitude: orderedCustomers[i - 1].latitude, longitude: orderedCustomers[i - 1].longitude };
         const d = calculateHaversineDistance(prev.latitude, prev.longitude, cust.latitude, cust.longitude) * 1.35;
+        const dur = d / 6.94;
+        totalDist += d;
+        totalDur += dur;
+
+        const segCoords = buildRoadCorridorCoordinates(prev, { latitude: cust.latitude, longitude: cust.longitude });
+        for (const pt of segCoords) {
+          if (
+            !fullPath.length ||
+            fullPath[fullPath.length - 1].latitude !== pt.latitude ||
+            fullPath[fullPath.length - 1].longitude !== pt.longitude
+          ) {
+            fullPath.push(pt);
+          }
+        }
+
         stops[i] = {
           sequence: i + 1,
           customer_id: cust.customer_id,
@@ -508,7 +515,7 @@ export const routeService = {
           longitude: cust.longitude,
           distance_from_prev_meters: Math.round(d),
           distance_from_prev_text: d >= 1000 ? `${(d / 1000).toFixed(2)} km` : `${Math.round(d)} m`,
-          duration_from_prev_text: '< 1 min',
+          duration_from_prev_text: dur >= 60 ? `${Math.round(dur / 60)} min` : '< 1 min',
         };
       }
     }

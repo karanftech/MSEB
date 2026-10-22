@@ -62,6 +62,7 @@ class CustomerResponse(BaseModel):
     dtc_code: Optional[str] = None
     disconnection_status: Optional[str] = None
     pending_amount: float = 0.0
+    collected_amount: float = 0.0
     due_date: Optional[str] = None
     pending_days: Optional[Any] = None
     status: str = "pending"  # pending, overdue, paid, partially_paid

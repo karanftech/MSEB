@@ -466,18 +466,31 @@ class MapsService:
                                 )
                             )
 
-        # Ensure all stops from the tour are populated
-        existing_stop_ids = {s.customer_id for s in stops}
+        # Ensure all stops from the tour are populated and path connects to each
+        existing_stops_map = {s.customer_id: s for s in stops}
+        final_stops: List[MultiRouteStop] = []
+
         for idx_in_tour, cust_idx in enumerate(tour):
             cust = customers[cust_idx]
-            if cust.customer_id not in existing_stop_ids:
-                prev_lat = origin_lat if idx_in_tour == 0 else customers[tour[idx_in_tour - 1]].latitude
-                prev_lng = origin_lng if idx_in_tour == 0 else customers[tour[idx_in_tour - 1]].longitude
-                air_d = haversine_distance(prev_lat, prev_lng, cust.latitude, cust.longitude) * 1.35
-                d_text = f"{air_d / 1000.0:.2f} km" if air_d >= 1000 else f"{int(air_d)} m"
-                stops.append(
+            prev_lat = origin_lat if idx_in_tour == 0 else customers[tour[idx_in_tour - 1]].latitude
+            prev_lng = origin_lng if idx_in_tour == 0 else customers[tour[idx_in_tour - 1]].longitude
+            air_d = haversine_distance(prev_lat, prev_lng, cust.latitude, cust.longitude) * 1.35
+            d_text = f"{air_d / 1000.0:.2f} km" if air_d >= 1000 else f"{int(air_d)} m"
+
+            existing_stop = existing_stops_map.get(cust.customer_id)
+            if existing_stop:
+                existing_stop.sequence = idx_in_tour + 1
+                final_stops.append(existing_stop)
+            else:
+                total_distance += air_d
+                total_duration += (air_d / 6.94)
+                interp_c = Coordinates(latitude=cust.latitude, longitude=cust.longitude)
+                if not full_coords_path or full_coords_path[-1].latitude != interp_c.latitude or full_coords_path[-1].longitude != interp_c.longitude:
+                    full_coords_path.append(interp_c)
+
+                final_stops.append(
                     MultiRouteStop(
-                        sequence=len(stops) + 1,
+                        sequence=idx_in_tour + 1,
                         customer_id=cust.customer_id,
                         name=cust.name or "Consumer",
                         meter_number=cust.meter_number or "",
@@ -500,7 +513,7 @@ class MapsService:
             total_duration_seconds=round(total_duration, 1),
             total_duration_text=total_dur_text,
             coordinates_path=full_coords_path if full_coords_path else [Coordinates(latitude=origin_lat, longitude=origin_lng)],
-            stops=stops
+            stops=final_stops
         )
 
 

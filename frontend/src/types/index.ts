@@ -36,6 +36,7 @@ export interface Customer {
   longitude: number;
   dtc_code?: string;
   pending_amount: number;
+  collected_amount?: number;
   due_date?: string;
   pending_days?: number | string;
   disconnection_status?: string;
@@ -197,14 +198,19 @@ export interface OfficerDashboardMetrics {
   remaining_collections_amount: number;
   td_customers_count?: number;
   td_pending_amount?: number;
+  td_collected_amount?: number;
   pd_customers_count?: number;
   pd_pending_amount?: number;
+  pd_collected_amount?: number;
   bur_customers_count?: number;
   bur_pending_amount?: number;
+  bur_collected_amount?: number;
   dis_customers_count?: number;
   dis_pending_amount?: number;
+  dis_collected_amount?: number;
   other_customers_count?: number;
   other_pending_amount?: number;
+  other_collected_amount?: number;
   nearby_pending_customers: NearbyCustomer[];
 }
 

@@ -135,11 +135,18 @@ export default function OfficerDashboard() {
         onClose={() => setIsAssignedModalOpen(false)}
       />
 
-      {/* Specific Status Category Customers List Modal (TD, PD, BUR, DIS) */}
+      {/* Specific Status Category Customers List Modal (TD, PD, BUR, DIS, OTHER) */}
       <StatusCustomersModal
         isOpen={!!statusModalType}
         onClose={() => setStatusModalType(null)}
         statusType={statusModalType}
+        collectedAmount={
+          statusModalType === 'TD' ? (metrics.td_collected_amount || 0) :
+          statusModalType === 'PD' ? (metrics.pd_collected_amount || 0) :
+          statusModalType === 'BUR' ? (metrics.bur_collected_amount || 0) :
+          statusModalType === 'DIS' ? (metrics.dis_collected_amount || 0) :
+          statusModalType === 'OTHER' ? (metrics.other_collected_amount || 0) : 0
+        }
         onCollectPayment={(cust) => {
           setPaymentCustomer(cust);
         }}
@@ -290,9 +297,14 @@ export default function OfficerDashboard() {
                 <span className="text-2xl font-black text-slate-900 group-hover:text-amber-700 transition-colors">
                   {metrics.td_customers_count || 0}
                 </span>
-                <span className="text-xs font-extrabold text-amber-600">
-                  {formatCurrency(metrics.td_pending_amount || 0)}
-                </span>
+                <div className="text-right">
+                  <span className="text-xs font-extrabold text-amber-600 block">
+                    {formatCurrency(metrics.td_pending_amount || 0)}
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-600 block">
+                    Col: {formatCurrency(metrics.td_collected_amount || 0)}
+                  </span>
+                </div>
               </div>
             </div>
           </button>
@@ -320,9 +332,14 @@ export default function OfficerDashboard() {
                 <span className="text-2xl font-black text-slate-900 group-hover:text-rose-700 transition-colors">
                   {metrics.pd_customers_count || 0}
                 </span>
-                <span className="text-xs font-extrabold text-rose-600">
-                  {formatCurrency(metrics.pd_pending_amount || 0)}
-                </span>
+                <div className="text-right">
+                  <span className="text-xs font-extrabold text-rose-600 block">
+                    {formatCurrency(metrics.pd_pending_amount || 0)}
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-600 block">
+                    Col: {formatCurrency(metrics.pd_collected_amount || 0)}
+                  </span>
+                </div>
               </div>
             </div>
           </button>
@@ -350,19 +367,24 @@ export default function OfficerDashboard() {
                 <span className="text-2xl font-black text-slate-900 group-hover:text-orange-700 transition-colors">
                   {metrics.bur_customers_count || 0}
                 </span>
-                <span className="text-xs font-extrabold text-orange-600">
-                  {formatCurrency(metrics.bur_pending_amount || 0)}
-                </span>
+                <div className="text-right">
+                  <span className="text-xs font-extrabold text-orange-600 block">
+                    {formatCurrency(metrics.bur_pending_amount || 0)}
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-600 block">
+                    Col: {formatCurrency(metrics.bur_collected_amount || 0)}
+                  </span>
+                </div>
               </div>
             </div>
           </button>
 
-          {/* Card 4: DIS (Disconnected) */}
+          {/* Card 4: DIS (Dispute) */}
           <button
             type="button"
             onClick={() => setStatusModalType('DIS')}
             className="bg-white border border-indigo-200/90 hover:border-indigo-400 p-4 rounded-xl shadow-2xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            title="Click to view all Disconnected (DIS) consumers"
+            title="Click to view all Dispute (DIS) consumers"
           >
             <div className="flex items-center justify-between">
               <div className="w-8 h-8 rounded-lg bg-indigo-50 group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white transition-colors flex items-center justify-center">
@@ -374,25 +396,30 @@ export default function OfficerDashboard() {
             </div>
             <div>
               <p className="text-[11px] text-slate-500 group-hover:text-indigo-900 font-bold uppercase transition-colors">
-                DIS (Disconnected)
+                Dispute (DIS)
               </p>
               <div className="flex items-baseline justify-between mt-1">
                 <span className="text-2xl font-black text-slate-900 group-hover:text-indigo-700 transition-colors">
                   {metrics.dis_customers_count || 0}
                 </span>
-                <span className="text-xs font-extrabold text-indigo-600">
-                  {formatCurrency(metrics.dis_pending_amount || 0)}
-                </span>
+                <div className="text-right">
+                  <span className="text-xs font-extrabold text-indigo-600 block">
+                    {formatCurrency(metrics.dis_pending_amount || 0)}
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-600 block">
+                    Col: {formatCurrency(metrics.dis_collected_amount || 0)}
+                  </span>
+                </div>
               </div>
             </div>
           </button>
 
-          {/* Card 5: OTHER (Other Category) */}
+          {/* Card 5: Normally Connected (OTHER) */}
           <button
             type="button"
             onClick={() => setStatusModalType('OTHER')}
             className="bg-white border border-cyan-200/90 hover:border-cyan-400 p-4 rounded-xl shadow-2xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-cyan-500"
-            title="Click to view all Other status consumers"
+            title="Click to view all Normally Connected consumers"
           >
             <div className="flex items-center justify-between">
               <div className="w-8 h-8 rounded-lg bg-cyan-50 group-hover:bg-cyan-600 text-cyan-600 group-hover:text-white transition-colors flex items-center justify-center">
@@ -404,15 +431,20 @@ export default function OfficerDashboard() {
             </div>
             <div>
               <p className="text-[11px] text-slate-500 group-hover:text-cyan-900 font-bold uppercase transition-colors">
-                OTHER (Other Meters)
+                Normally Connected
               </p>
               <div className="flex items-baseline justify-between mt-1">
                 <span className="text-2xl font-black text-slate-900 group-hover:text-cyan-700 transition-colors">
                   {metrics.other_customers_count || 0}
                 </span>
-                <span className="text-xs font-extrabold text-cyan-600">
-                  {formatCurrency(metrics.other_pending_amount || 0)}
-                </span>
+                <div className="text-right">
+                  <span className="text-xs font-extrabold text-cyan-600 block">
+                    {formatCurrency(metrics.other_pending_amount || 0)}
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-600 block">
+                    Col: {formatCurrency(metrics.other_collected_amount || 0)}
+                  </span>
+                </div>
               </div>
             </div>
           </button>

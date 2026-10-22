@@ -330,10 +330,15 @@ class CustomerImportService:
 
                 raw_disconn = get_val('disconnection_status', '').upper()
                 disconn_status = None
-                for cat in ['TD', 'PD', 'BUR', 'DIS', 'OTHER']:
-                    if cat in raw_disconn:
-                        disconn_status = cat
-                        break
+                if 'DISPUT' in raw_disconn:
+                    disconn_status = 'DIS'
+                elif 'NORMAL' in raw_disconn:
+                    disconn_status = 'OTHER'
+                else:
+                    for cat in ['TD', 'PD', 'BUR', 'DIS', 'OTHER']:
+                        if cat in raw_disconn:
+                            disconn_status = cat
+                            break
 
                 officer_id_to_assign = uploader_officer_id or user_id_str or "OFF-1001"
 
