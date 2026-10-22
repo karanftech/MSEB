@@ -194,6 +194,7 @@ export interface OfficerDashboardMetrics {
   number_of_completed_collections: number;
   todays_collection_target: number;
   todays_collected_amount: number;
+  total_collected_amount?: number;
   remaining_collections_count: number;
   remaining_collections_amount: number;
   td_customers_count?: number;

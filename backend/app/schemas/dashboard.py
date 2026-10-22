@@ -9,6 +9,7 @@ class OfficerDashboardMetrics(BaseModel):
     number_of_completed_collections: int
     todays_collection_target: float
     todays_collected_amount: float
+    total_collected_amount: float = 0.0
     remaining_collections_count: int
     remaining_collections_amount: float
     td_customers_count: int = 0

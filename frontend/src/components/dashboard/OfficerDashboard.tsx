@@ -7,6 +7,8 @@ import { OfficerDashboardMetrics, Customer, PaymentRecord } from '@/types';
 import { formatCurrency } from '@/utils/formatters';
 import api from '@/services/api';
 import { useGeolocation } from '@/hooks/useGeolocation';
+import { customerService } from '@/services/customerService';
+import { paymentService } from '@/services/paymentService';
 
 import BulkUploadModal from '@/components/customers/BulkUploadModal';
 import AssignedCustomersModal from '@/components/dashboard/AssignedCustomersModal';
@@ -21,6 +23,7 @@ export default function OfficerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [isAssignedModalOpen, setIsAssignedModalOpen] = useState<boolean>(false);
+  const [assignedModalFilter, setAssignedModalFilter] = useState<'all' | 'pending' | 'completed'>('all');
   const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null>(null);
   const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null);
   const [receiptRecord, setReceiptRecord] = useState<PaymentRecord | null>(null);
@@ -42,13 +45,105 @@ export default function OfficerDashboard() {
     if (showFullLoader) setLoading(true);
     setError(null);
     try {
-      const response = await api.get<OfficerDashboardMetrics>('/api/dashboard/officer', {
-        params: {
-          latitude: targetCoords?.latitude || 21.1458,
-          longitude: targetCoords?.longitude || 79.0882,
-        },
+      const [dashRes, customersData, paymentsData] = await Promise.all([
+        api.get<OfficerDashboardMetrics>('/api/dashboard/officer', {
+          params: {
+            latitude: targetCoords?.latitude || 21.1458,
+            longitude: targetCoords?.longitude || 79.0882,
+          },
+        }),
+        customerService.getCustomers().catch(() => []),
+        paymentService.getPayments({ limit: 500 }).catch(() => []),
+      ]);
+
+      const baseMetrics = dashRes.data;
+      const safeCustomers = Array.isArray(customersData) ? customersData : [];
+      const safePayments = Array.isArray(paymentsData) ? paymentsData : [];
+
+      const pMap: Record<string, number> = {};
+      safePayments.forEach((p) => {
+        const amt = Number(p.amount || 0);
+        if (p.customer_id) pMap[p.customer_id] = (pMap[p.customer_id] || 0) + amt;
+        if (p.meter_number) pMap[p.meter_number] = (pMap[p.meter_number] || 0) + amt;
       });
-      setMetrics(response.data);
+
+      const computeCategoryStats = (type: string) => {
+        const target = type.toUpperCase().trim();
+        const list = safeCustomers.filter((c) => {
+          const ds = (c.disconnection_status || '').toUpperCase().trim();
+          const st = (c.status || '').toUpperCase().trim();
+          return ds === target || st === target || ds.includes(target) || st.includes(target);
+        });
+        const pendingAmt = list.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
+        const collectedAmt = list.reduce((acc, c) => {
+          const direct = Number(c.collected_amount || 0);
+          const fromPmt = Number(pMap[c.customer_id] || (c.meter_number ? pMap[c.meter_number] : 0) || 0);
+          return acc + (direct > 0 ? direct : fromPmt);
+        }, 0);
+        return { count: list.length, pendingAmt, collectedAmt };
+      };
+
+      const tdStats = computeCategoryStats('TD');
+      const pdStats = computeCategoryStats('PD');
+      const burStats = computeCategoryStats('BUR');
+      const disStats = computeCategoryStats('DIS');
+      const otherStats = computeCategoryStats('OTHER');
+
+      const totalPaymentsSum = safePayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
+      const totalPendingFromCusts = safeCustomers.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
+
+      const mergedMetrics: OfficerDashboardMetrics = {
+        ...baseMetrics,
+        total_assigned_customers: baseMetrics.total_assigned_customers || safeCustomers.length,
+        total_pending_amount: (baseMetrics.total_pending_amount && baseMetrics.total_pending_amount > 0)
+          ? baseMetrics.total_pending_amount
+          : totalPendingFromCusts,
+        total_collected_amount: (baseMetrics.total_collected_amount && baseMetrics.total_collected_amount > 0)
+          ? baseMetrics.total_collected_amount
+          : totalPaymentsSum,
+
+        td_customers_count: baseMetrics.td_customers_count || tdStats.count,
+        td_pending_amount: (baseMetrics.td_pending_amount && baseMetrics.td_pending_amount > 0)
+          ? baseMetrics.td_pending_amount
+          : tdStats.pendingAmt,
+        td_collected_amount: (baseMetrics.td_collected_amount && baseMetrics.td_collected_amount > 0)
+          ? baseMetrics.td_collected_amount
+          : tdStats.collectedAmt,
+
+        pd_customers_count: baseMetrics.pd_customers_count || pdStats.count,
+        pd_pending_amount: (baseMetrics.pd_pending_amount && baseMetrics.pd_pending_amount > 0)
+          ? baseMetrics.pd_pending_amount
+          : pdStats.pendingAmt,
+        pd_collected_amount: (baseMetrics.pd_collected_amount && baseMetrics.pd_collected_amount > 0)
+          ? baseMetrics.pd_collected_amount
+          : pdStats.collectedAmt,
+
+        bur_customers_count: baseMetrics.bur_customers_count || burStats.count,
+        bur_pending_amount: (baseMetrics.bur_pending_amount && baseMetrics.bur_pending_amount > 0)
+          ? baseMetrics.bur_pending_amount
+          : burStats.pendingAmt,
+        bur_collected_amount: (baseMetrics.bur_collected_amount && baseMetrics.bur_collected_amount > 0)
+          ? baseMetrics.bur_collected_amount
+          : burStats.collectedAmt,
+
+        dis_customers_count: baseMetrics.dis_customers_count || disStats.count,
+        dis_pending_amount: (baseMetrics.dis_pending_amount && baseMetrics.dis_pending_amount > 0)
+          ? baseMetrics.dis_pending_amount
+          : disStats.pendingAmt,
+        dis_collected_amount: (baseMetrics.dis_collected_amount && baseMetrics.dis_collected_amount > 0)
+          ? baseMetrics.dis_collected_amount
+          : disStats.collectedAmt,
+
+        other_customers_count: baseMetrics.other_customers_count || otherStats.count,
+        other_pending_amount: (baseMetrics.other_pending_amount && baseMetrics.other_pending_amount > 0)
+          ? baseMetrics.other_pending_amount
+          : otherStats.pendingAmt,
+        other_collected_amount: (baseMetrics.other_collected_amount && baseMetrics.other_collected_amount > 0)
+          ? baseMetrics.other_collected_amount
+          : otherStats.collectedAmt,
+      };
+
+      setMetrics(mergedMetrics);
     } catch (err: any) {
       console.error('Failed to load officer dashboard metrics', err);
       setError(err?.response?.data?.detail || 'Failed to connect to backend server. Make sure backend service is running.');
@@ -132,6 +227,7 @@ export default function OfficerDashboard() {
       {/* Assigned Customers Modal */}
       <AssignedCustomersModal
         isOpen={isAssignedModalOpen}
+        initialFilter={assignedModalFilter}
         onClose={() => setIsAssignedModalOpen(false)}
       />
 
@@ -207,12 +303,15 @@ export default function OfficerDashboard() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {/* Card 1: Total Assigned (Clickable) */}
         <button
-          onClick={() => setIsAssignedModalOpen(true)}
-          className="bg-white border border-slate-200 hover:border-blue-500 p-4 rounded-lg shadow-xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onClick={() => {
+            setAssignedModalFilter('all');
+            setIsAssignedModalOpen(true);
+          }}
+          className="bg-white border border-slate-200 hover:border-blue-500 p-4 rounded-xl shadow-xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-blue-500"
           title="Click to view all assigned customers & meter details"
         >
           <div className="flex items-center justify-between">
-            <div className="w-8 h-8 rounded bg-blue-50 group-hover:bg-blue-600 text-blue-600 group-hover:text-white transition-colors flex items-center justify-center mb-1">
+            <div className="w-8 h-8 rounded-lg bg-blue-50 group-hover:bg-blue-600 text-blue-600 group-hover:text-white transition-colors flex items-center justify-center mb-1">
               <Users className="w-4 h-4" />
             </div>
             <span className="text-[10px] font-bold text-blue-600 bg-blue-50 group-hover:bg-blue-100 px-2 py-0.5 rounded-full border border-blue-200 transition-colors flex items-center gap-0.5 shrink-0 whitespace-nowrap">
@@ -222,41 +321,85 @@ export default function OfficerDashboard() {
           <p className="text-[11px] text-slate-500 group-hover:text-blue-900 uppercase font-semibold transition-colors">
             Assigned Customers
           </p>
-          <p className="text-2xl font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors">
-            {metrics.total_assigned_customers}
-          </p>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-black text-slate-900 group-hover:text-blue-600 transition-colors">
+              {metrics.total_assigned_customers}
+            </span>
+            <span className="text-xs font-bold text-slate-500">
+              {formatCurrency(metrics.total_pending_amount)}
+            </span>
+          </div>
         </button>
 
         {/* Card 2: Total Pending Amount */}
-        <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-sm space-y-1">
-          <div className="w-8 h-8 rounded bg-amber-50 text-amber-600 flex items-center justify-center mb-1">
+        <div className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm space-y-1.5">
+          <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center mb-1">
             <DollarSign className="w-4 h-4" />
           </div>
           <p className="text-[11px] text-slate-500 uppercase font-semibold">Pending Amount</p>
           <p className="text-2xl font-bold text-amber-600">{formatCurrency(metrics.total_pending_amount)}</p>
+          <p className="text-[11px] font-medium text-slate-400">{metrics.number_of_pending_bills} pending consumer accounts</p>
         </div>
 
-        {/* Card 3: Pending Customers (Static Display) */}
-        <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-sm space-y-1">
-          <div className="w-8 h-8 rounded bg-red-50 text-red-600 flex items-center justify-center mb-1">
-            <FileText className="w-4 h-4" />
+        {/* Card 3: Pending Customers (Clickable) */}
+        <button
+          onClick={() => {
+            setAssignedModalFilter('pending');
+            setIsAssignedModalOpen(true);
+          }}
+          className="bg-white border border-slate-200 hover:border-red-500 p-4 rounded-xl shadow-xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-red-500"
+          title="Click to view all consumers with pending dues"
+        >
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-lg bg-red-50 group-hover:bg-red-600 text-red-600 group-hover:text-white transition-colors flex items-center justify-center mb-1">
+              <FileText className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-bold text-red-600 bg-red-50 group-hover:bg-red-100 px-2 py-0.5 rounded-full border border-red-200 transition-colors flex items-center gap-0.5 shrink-0 whitespace-nowrap">
+              View <ChevronRight className="w-3 h-3 inline" />
+            </span>
           </div>
-          <p className="text-[11px] text-slate-500 uppercase font-semibold">Pending Customers</p>
-          <p className="text-2xl font-extrabold text-red-600">
-            {metrics.number_of_pending_bills}
+          <p className="text-[11px] text-slate-500 group-hover:text-red-900 uppercase font-semibold transition-colors">
+            Pending Customers
           </p>
-        </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-black text-red-600 transition-colors">
+              {metrics.number_of_pending_bills}
+            </span>
+            <span className="text-xs font-bold text-red-600">
+              {formatCurrency(metrics.total_pending_amount)}
+            </span>
+          </div>
+        </button>
 
-        {/* Card 4: Completed Collections (Static Display) */}
-        <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-sm space-y-1">
-          <div className="w-8 h-8 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center mb-1">
-            <CheckCircle2 className="w-4 h-4" />
+        {/* Card 4: Completed Collections (Clickable) */}
+        <button
+          onClick={() => {
+            setAssignedModalFilter('completed');
+            setIsAssignedModalOpen(true);
+          }}
+          className="bg-white border border-slate-200 hover:border-emerald-500 p-4 rounded-xl shadow-xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          title="Click to view all completed collections"
+        >
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 group-hover:bg-emerald-600 text-emerald-600 group-hover:text-white transition-colors flex items-center justify-center mb-1">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 group-hover:bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200 transition-colors flex items-center gap-0.5 shrink-0 whitespace-nowrap">
+              View <ChevronRight className="w-3 h-3 inline" />
+            </span>
           </div>
-          <p className="text-[11px] text-slate-500 uppercase font-semibold">Completed Collections</p>
-          <p className="text-2xl font-extrabold text-emerald-600">
-            {metrics.number_of_completed_collections}
+          <p className="text-[11px] text-slate-500 group-hover:text-emerald-900 uppercase font-semibold transition-colors">
+            Completed Collections
           </p>
-        </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-black text-emerald-600 transition-colors">
+              {metrics.number_of_completed_collections}
+            </span>
+            <span className="text-xs font-bold text-emerald-600">
+              Col: {formatCurrency(metrics.total_collected_amount || metrics.todays_collected_amount || 0)}
+            </span>
+          </div>
+        </button>
       </div>
 
       {/* Meter & Disconnection Status Cards: TD, PD, BUR, DIS */}

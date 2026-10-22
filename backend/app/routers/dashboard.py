@@ -58,28 +58,33 @@ async def get_officer_dashboard(
 
         is_pending = Customer.status.in_(["pending", "overdue", "partially_paid"])
         is_paid = (Customer.status == "paid")
-        is_td = or_(Customer.disconnection_status.ilike("TD"), Customer.status.ilike("TD"))
-        is_pd = or_(Customer.disconnection_status.ilike("PD"), Customer.status.ilike("PD"))
-        is_bur = or_(Customer.disconnection_status.ilike("BUR"), Customer.status.ilike("BUR"))
-        is_dis = or_(Customer.disconnection_status.ilike("DIS"), Customer.status.ilike("DIS"))
-        is_other = or_(Customer.disconnection_status.ilike("OTHER"), Customer.status.ilike("OTHER"))
+        is_td = or_(Customer.disconnection_status.ilike("%TD%"), Customer.status.ilike("%TD%"))
+        is_pd = or_(Customer.disconnection_status.ilike("%PD%"), Customer.status.ilike("%PD%"))
+        is_bur = or_(Customer.disconnection_status.ilike("%BUR%"), Customer.status.ilike("%BUR%"))
+        is_dis = or_(Customer.disconnection_status.ilike("%DIS%"), Customer.status.ilike("%DIS%"))
+        is_other = or_(
+            Customer.disconnection_status.ilike("%OTHER%"),
+            Customer.disconnection_status.ilike("%NORMAL%"),
+            Customer.status.ilike("%OTHER%"),
+            Customer.status.ilike("%NORMAL%")
+        )
 
-        # Single consolidated query for all customer metrics (10x faster than 9 separate queries)
+        # Single consolidated query for all customer metrics
         stats_stmt = select(
             func.count(Customer.id).label("total_assigned"),
             func.count(case((is_pending, Customer.id))).label("pending_count"),
-            func.coalesce(func.sum(case((is_pending, Customer.pending_amount), else_=0.0)), 0.0).label("pending_amount"),
+            func.coalesce(func.sum(case((is_pending, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("pending_amount"),
             func.count(case((is_paid, Customer.id))).label("paid_count"),
             func.count(case((is_td, Customer.id))).label("td_count"),
-            func.coalesce(func.sum(case((is_td, Customer.pending_amount), else_=0.0)), 0.0).label("td_amount"),
+            func.coalesce(func.sum(case((is_td, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("td_amount"),
             func.count(case((is_pd, Customer.id))).label("pd_count"),
-            func.coalesce(func.sum(case((is_pd, Customer.pending_amount), else_=0.0)), 0.0).label("pd_amount"),
+            func.coalesce(func.sum(case((is_pd, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("pd_amount"),
             func.count(case((is_bur, Customer.id))).label("bur_count"),
-            func.coalesce(func.sum(case((is_bur, Customer.pending_amount), else_=0.0)), 0.0).label("bur_amount"),
+            func.coalesce(func.sum(case((is_bur, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("bur_amount"),
             func.count(case((is_dis, Customer.id))).label("dis_count"),
-            func.coalesce(func.sum(case((is_dis, Customer.pending_amount), else_=0.0)), 0.0).label("dis_amount"),
+            func.coalesce(func.sum(case((is_dis, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("dis_amount"),
             func.count(case((is_other, Customer.id))).label("other_count"),
-            func.coalesce(func.sum(case((is_other, Customer.pending_amount), else_=0.0)), 0.0).label("other_amount"),
+            func.coalesce(func.sum(case((is_other, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("other_amount"),
         ).where(and_(*officer_cus_conds))
 
         stats_row = (await db.execute(stats_stmt)).first()
@@ -99,19 +104,26 @@ async def get_officer_dashboard(
         other_count = stats_row[12] or 0 if stats_row else 0
         other_amount = float(stats_row[13] or 0.0) if stats_row else 0.0
 
-        # Category collection stats
-        is_pmt_td = or_(Payment.disconnection_status.ilike("TD"), Payment.payment_method.ilike("TD"))
-        is_pmt_pd = or_(Payment.disconnection_status.ilike("PD"), Payment.payment_method.ilike("PD"))
-        is_pmt_bur = or_(Payment.disconnection_status.ilike("BUR"), Payment.payment_method.ilike("BUR"))
-        is_pmt_dis = or_(Payment.disconnection_status.ilike("DIS"), Payment.payment_method.ilike("DIS"))
-        is_pmt_other = or_(Payment.disconnection_status.ilike("OTHER"), Payment.payment_method.ilike("OTHER"))
+        # Category collection stats by linking Payment with Customer
+        pmt_is_td = or_(is_td, Payment.disconnection_status.ilike("%TD%"))
+        pmt_is_pd = or_(is_pd, Payment.disconnection_status.ilike("%PD%"))
+        pmt_is_bur = or_(is_bur, Payment.disconnection_status.ilike("%BUR%"))
+        pmt_is_dis = or_(is_dis, Payment.disconnection_status.ilike("%DIS%"))
+        pmt_is_other = or_(is_other, Payment.disconnection_status.ilike("%OTHER%"), Payment.disconnection_status.ilike("%NORMAL%"))
 
         pmt_stats_stmt = select(
-            func.coalesce(func.sum(case((is_pmt_td, Payment.amount), else_=0.0)), 0.0).label("td_collected"),
-            func.coalesce(func.sum(case((is_pmt_pd, Payment.amount), else_=0.0)), 0.0).label("pd_collected"),
-            func.coalesce(func.sum(case((is_pmt_bur, Payment.amount), else_=0.0)), 0.0).label("bur_collected"),
-            func.coalesce(func.sum(case((is_pmt_dis, Payment.amount), else_=0.0)), 0.0).label("dis_collected"),
-            func.coalesce(func.sum(case((is_pmt_other, Payment.amount), else_=0.0)), 0.0).label("other_collected"),
+            func.coalesce(func.sum(case((pmt_is_td, Payment.amount), else_=0.0)), 0.0).label("td_collected"),
+            func.coalesce(func.sum(case((pmt_is_pd, Payment.amount), else_=0.0)), 0.0).label("pd_collected"),
+            func.coalesce(func.sum(case((pmt_is_bur, Payment.amount), else_=0.0)), 0.0).label("bur_collected"),
+            func.coalesce(func.sum(case((pmt_is_dis, Payment.amount), else_=0.0)), 0.0).label("dis_collected"),
+            func.coalesce(func.sum(case((pmt_is_other, Payment.amount), else_=0.0)), 0.0).label("other_collected"),
+            func.coalesce(func.sum(Payment.amount), 0.0).label("total_collected"),
+        ).select_from(Payment).outerjoin(
+            Customer,
+            or_(
+                Payment.customer_id == Customer.customer_id,
+                and_(Payment.meter_number.isnot(None), Payment.meter_number != "", Payment.meter_number == Customer.meter_number)
+            )
         ).where(Payment.officer_id.in_(filter_ids))
         pmt_stats_row = (await db.execute(pmt_stats_stmt)).first()
 
@@ -120,6 +132,7 @@ async def get_officer_dashboard(
         bur_collected = float(pmt_stats_row[2] or 0.0) if pmt_stats_row else 0.0
         dis_collected = float(pmt_stats_row[3] or 0.0) if pmt_stats_row else 0.0
         other_collected = float(pmt_stats_row[4] or 0.0) if pmt_stats_row else 0.0
+        total_collected_amount = float(pmt_stats_row[5] or 0.0) if pmt_stats_row else 0.0
 
         # Today's collected amount & count
         pmt_conds = [
@@ -157,6 +170,7 @@ async def get_officer_dashboard(
             number_of_completed_collections=paid_count,
             todays_collection_target=target_amount,
             todays_collected_amount=round(today_collected_amount, 2),
+            total_collected_amount=round(total_collected_amount, 2),
             remaining_collections_count=remaining_collections_count,
             remaining_collections_amount=round(remaining_collections_amount, 2),
             td_customers_count=td_count,

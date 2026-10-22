@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { X, Search, Users, Gauge, DollarSign, AlertCircle } from 'lucide-react';
+import React, { useEffect, useState, useMemo } from 'react';
+import { X, Search, Users, Gauge, DollarSign, AlertCircle, CheckCircle2, ChevronRight } from 'lucide-react';
 import { Customer } from '@/types';
 import { customerService } from '@/services/customerService';
 import { formatCurrency } from '@/utils/formatters';
@@ -9,12 +9,22 @@ import { formatCurrency } from '@/utils/formatters';
 interface AssignedCustomersModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialFilter?: string;
+  initialFilter?: 'all' | 'pending' | 'completed' | string;
 }
 
-export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCustomersModalProps) {
+export default function AssignedCustomersModal({ isOpen, onClose, initialFilter = 'all' }: AssignedCustomersModalProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [filterTab, setFilterTab] = useState<'all' | 'pending' | 'completed'>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  useEffect(() => {
+    if (initialFilter && ['all', 'pending', 'completed'].includes(initialFilter)) {
+      setFilterTab(initialFilter as any);
+    } else {
+      setFilterTab('all');
+    }
+  }, [initialFilter, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -23,7 +33,7 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
       setLoading(true);
       try {
         const data = await customerService.getCustomers();
-        setCustomers(data);
+        setCustomers(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error('Failed to load assigned customers', err);
       } finally {
@@ -34,10 +44,44 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
     fetchAssigned();
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  const totalPendingSum = useMemo(() => {
+    return customers.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
+  }, [customers]);
 
-  const totalPendingSum = customers.reduce((acc, c) => acc + (c.pending_amount || 0), 0);
-  const pendingCount = customers.filter((c) => c.pending_amount > 0).length;
+  const totalCollectedSum = useMemo(() => {
+    return customers.reduce((acc, c) => acc + (Number(c.collected_amount) || 0), 0);
+  }, [customers]);
+
+  const pendingCount = useMemo(() => {
+    return customers.filter((c) => (Number(c.pending_amount) || 0) > 0).length;
+  }, [customers]);
+
+  const completedCount = useMemo(() => {
+    return customers.filter((c) => c.status === 'paid' || (Number(c.pending_amount) || 0) <= 0).length;
+  }, [customers]);
+
+  const filteredCustomers = useMemo(() => {
+    let list = customers;
+
+    if (filterTab === 'pending') {
+      list = list.filter((c) => (Number(c.pending_amount) || 0) > 0);
+    } else if (filterTab === 'completed') {
+      list = list.filter((c) => c.status === 'paid' || (Number(c.pending_amount) || 0) <= 0);
+    }
+
+    if (!searchQuery.trim()) return list;
+
+    const q = searchQuery.toLowerCase().trim();
+    return list.filter((c) =>
+      c.name.toLowerCase().includes(q) ||
+      c.customer_id.toLowerCase().includes(q) ||
+      (c.meter_number && c.meter_number.toLowerCase().includes(q)) ||
+      (c.address && c.address.toLowerCase().includes(q)) ||
+      (c.dtc_code && c.dtc_code.toLowerCase().includes(q))
+    );
+  }, [customers, filterTab, searchQuery]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-3 sm:p-5">
@@ -49,7 +93,22 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
             <div className="p-2 rounded-lg text-white shadow-xs bg-blue-600">
               <Users className="w-4 h-4" />
             </div>
-            <h2 className="text-base font-bold text-slate-900 leading-none">Assigned Customers Directory</h2>
+            <div>
+              <h2 className="text-base font-bold text-slate-900 leading-none">
+                {filterTab === 'pending'
+                  ? 'Pending Customers Directory'
+                  : filterTab === 'completed'
+                  ? 'Completed Collections Directory'
+                  : 'Assigned Customers Directory'}
+              </h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {filterTab === 'pending'
+                  ? `Showing ${filteredCustomers.length} accounts with unpaid electricity bills`
+                  : filterTab === 'completed'
+                  ? `Showing ${filteredCustomers.length} accounts with completed collections`
+                  : `Total ${customers.length} consumers assigned to your jurisdiction`}
+              </p>
+            </div>
           </div>
 
           <button
@@ -61,30 +120,82 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
           </button>
         </div>
 
-        {/* Summary Metric Strip */}
+        {/* Summary Metric Strip - Clickable Filters */}
         <div className="bg-slate-100/80 border-b border-slate-200 px-2.5 sm:px-5 py-2.5 grid grid-cols-3 gap-1.5 sm:gap-3 text-[10px] sm:text-xs shrink-0">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-1.5 min-w-0">
-            <div className="flex items-center gap-1 shrink-0">
-              <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600 shrink-0" />
-              <span className="text-slate-500 font-semibold leading-tight">Total Assigned:</span>
+          <button
+            type="button"
+            onClick={() => setFilterTab('all')}
+            className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-1 ${
+              filterTab === 'all'
+                ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-500/20 shadow-xs'
+                : 'bg-white border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Users className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span className="text-slate-600 font-semibold truncate">All Assigned</span>
             </div>
-            <span className="font-extrabold text-slate-900 truncate pl-4 sm:pl-0">{customers.length}</span>
-          </div>
+            <span className="font-extrabold text-slate-900">{customers.length}</span>
+          </button>
 
-          <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-1.5 border-l border-slate-200 pl-1.5 sm:pl-3 min-w-0">
-            <div className="flex items-center gap-1 shrink-0">
-              <DollarSign className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600 shrink-0" />
-              <span className="text-slate-500 font-semibold leading-tight">Total Outstanding:</span>
+          <button
+            type="button"
+            onClick={() => setFilterTab('pending')}
+            className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-1 ${
+              filterTab === 'pending'
+                ? 'bg-red-50 border-red-300 ring-2 ring-red-500/20 shadow-xs'
+                : 'bg-white border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 min-w-0">
+              <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+              <div className="truncate">
+                <span className="text-slate-600 font-semibold block truncate">Pending Dues</span>
+                <span className="text-[10px] font-bold text-red-600 block">{formatCurrency(totalPendingSum)}</span>
+              </div>
             </div>
-            <span className="font-extrabold text-amber-600 truncate pl-4 sm:pl-0">{formatCurrency(totalPendingSum)}</span>
-          </div>
+            <span className="font-extrabold text-red-600">{pendingCount}</span>
+          </button>
 
-          <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-1.5 border-l border-slate-200 pl-1.5 sm:pl-3 min-w-0">
-            <div className="flex items-center gap-1 shrink-0">
-              <AlertCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-500 shrink-0" />
-              <span className="text-slate-500 font-semibold leading-tight">Pending Dues:</span>
+          <button
+            type="button"
+            onClick={() => setFilterTab('completed')}
+            className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-1 ${
+              filterTab === 'completed'
+                ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-500/20 shadow-xs'
+                : 'bg-white border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 min-w-0">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <div className="truncate">
+                <span className="text-slate-600 font-semibold block truncate">Completed</span>
+                <span className="text-[10px] font-bold text-emerald-600 block">{formatCurrency(totalCollectedSum)}</span>
+              </div>
             </div>
-            <span className="font-extrabold text-slate-900 truncate pl-4 sm:pl-0">{pendingCount} accounts</span>
+            <span className="font-extrabold text-emerald-600">{completedCount}</span>
+          </button>
+        </div>
+
+        {/* Search Bar */}
+        <div className="p-3 border-b border-slate-200 bg-white">
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by customer name, customer ID, meter #, DTC, address..."
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-8 py-2 text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -93,12 +204,17 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
           {loading ? (
             <div className="py-16 text-center text-slate-500 text-xs space-y-2">
               <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-              <p className="font-medium">Loading assigned consumer accounts...</p>
+              <p className="font-medium">Loading consumer accounts...</p>
             </div>
-          ) : customers.length === 0 ? (
-            <div className="py-16 text-center text-slate-500 text-xs bg-white border border-slate-200 rounded-lg shadow-2xs">
-              <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-              <p className="font-semibold text-slate-700">No assigned consumer records found.</p>
+          ) : filteredCustomers.length === 0 ? (
+            <div className="py-16 text-center text-slate-500 text-xs bg-white border border-slate-200 rounded-lg shadow-2xs p-6 space-y-2">
+              <Users className="w-8 h-8 text-slate-300 mx-auto mb-1" />
+              <p className="font-bold text-slate-700 text-sm">No consumer records found</p>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                {searchQuery
+                  ? `No accounts matching "${searchQuery}". Try a different keyword.`
+                  : `No records in the ${filterTab} category.`}
+              </p>
             </div>
           ) : (
             <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto custom-scrollbar shadow-xs">
@@ -108,11 +224,12 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
                     <th className="py-3 px-4">#</th>
                     <th className="py-3 px-4">Meter ID / Number</th>
                     <th className="py-3 px-4">Consumer Name</th>
-                    <th className="py-3 px-4 text-right">Pending Amount</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 text-right">Amount / Dues</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {customers.map((cus, idx) => (
+                  {filteredCustomers.map((cus, idx) => (
                     <tr key={cus.customer_id} className="hover:bg-blue-50/50 transition-colors">
                       {/* Index */}
                       <td className="py-3 px-4 font-semibold text-slate-400 text-[11px]">
@@ -127,7 +244,7 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
                           </div>
                           <div>
                             <span className="font-mono font-bold text-slate-900 text-xs block">
-                              {cus.meter_number}
+                              {cus.meter_number || 'N/A'}
                             </span>
                             <span className="text-[10px] text-slate-500 font-mono">
                               ID: {cus.meters?.[0]?.meter_id || `MTR-${cus.customer_id.slice(-5)}`}
@@ -147,16 +264,52 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
                         </div>
                       </td>
 
-                      {/* Pending Amount */}
-                      <td className="py-3 px-4 text-right font-extrabold text-sm">
+                      {/* Disconnection Status / Account Status Badge */}
+                      <td className="py-3 px-4">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {cus.disconnection_status && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200">
+                              {cus.disconnection_status}
+                            </span>
+                          )}
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              cus.status === 'paid'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : cus.status === 'overdue'
+                                ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200'
+                            }`}
+                          >
+                            {cus.status || 'Pending'}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Amount Details */}
+                      <td className="py-3 px-4 text-right font-extrabold text-sm whitespace-nowrap">
                         {cus.pending_amount > 0 ? (
-                          <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                            {formatCurrency(cus.pending_amount)}
-                          </span>
+                          <div className="inline-block text-right">
+                            <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 block">
+                              {formatCurrency(cus.pending_amount)}
+                            </span>
+                            {Number(cus.collected_amount || 0) > 0 && (
+                              <span className="text-[10px] font-bold text-emerald-600 block mt-0.5">
+                                Col: {formatCurrency(Number(cus.collected_amount))}
+                              </span>
+                            )}
+                          </div>
                         ) : (
-                          <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                            ₹ 0.00
-                          </span>
+                          <div className="inline-block text-right">
+                            <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 block">
+                              {Number(cus.collected_amount || 0) > 0
+                                ? formatCurrency(Number(cus.collected_amount))
+                                : 'Paid in Full'}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-400 block mt-0.5">
+                              ₹0 Pending
+                            </span>
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -169,7 +322,7 @@ export default function AssignedCustomersModal({ isOpen, onClose }: AssignedCust
 
         {/* Modal Footer */}
         <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500 shrink-0">
-          <span>Total {customers.length} assigned consumers</span>
+          <span>Showing {filteredCustomers.length} of {customers.length} consumer accounts</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 font-semibold rounded-md transition-colors cursor-pointer"

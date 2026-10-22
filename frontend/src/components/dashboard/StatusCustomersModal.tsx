@@ -112,7 +112,7 @@ export default function StatusCustomersModal({
         const ds = (c.disconnection_status || '').toUpperCase().trim();
         const st = (c.status || '').toUpperCase().trim();
         const target = statusType.toUpperCase().trim();
-        return ds === target || st === target;
+        return ds === target || st === target || ds.includes(target) || st.includes(target);
       });
       setCustomers(filtered);
 
