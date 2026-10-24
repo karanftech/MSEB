@@ -59,15 +59,10 @@ async def get_officer_dashboard(
         is_pending = Customer.status.in_(["pending", "overdue", "partially_paid"])
         is_paid = (Customer.status == "paid")
         is_td = or_(Customer.disconnection_status.ilike("%TD%"), Customer.status.ilike("%TD%"))
-        is_pd = or_(Customer.disconnection_status.ilike("%PD%"), Customer.status.ilike("%PD%"))
-        is_bur = or_(Customer.disconnection_status.ilike("%BUR%"), Customer.status.ilike("%BUR%"))
-        is_dis = or_(Customer.disconnection_status.ilike("%DIS%"), Customer.status.ilike("%DIS%"))
-        is_other = or_(
-            Customer.disconnection_status.ilike("%OTHER%"),
-            Customer.disconnection_status.ilike("%NORMAL%"),
-            Customer.status.ilike("%OTHER%"),
-            Customer.status.ilike("%NORMAL%")
-        )
+        is_pd = and_(~is_td, or_(Customer.disconnection_status.ilike("%PD%"), Customer.status.ilike("%PD%")))
+        is_bur = and_(~is_td, ~is_pd, or_(Customer.disconnection_status.ilike("%BUR%"), Customer.status.ilike("%BUR%")))
+        is_dis = and_(~is_td, ~is_pd, ~is_bur, or_(Customer.disconnection_status.ilike("%DIS%"), Customer.status.ilike("%DIS%")))
+        is_other = and_(~is_td, ~is_pd, ~is_bur, ~is_dis)
 
         # Single consolidated query for all customer metrics
         stats_stmt = select(
@@ -104,27 +99,17 @@ async def get_officer_dashboard(
         other_count = stats_row[12] or 0 if stats_row else 0
         other_amount = float(stats_row[13] or 0.0) if stats_row else 0.0
 
-        # Category collection stats by linking Payment with Customer
-        pmt_is_td = or_(is_td, Payment.disconnection_status.ilike("%TD%"))
-        pmt_is_pd = or_(is_pd, Payment.disconnection_status.ilike("%PD%"))
-        pmt_is_bur = or_(is_bur, Payment.disconnection_status.ilike("%BUR%"))
-        pmt_is_dis = or_(is_dis, Payment.disconnection_status.ilike("%DIS%"))
-        pmt_is_other = or_(is_other, Payment.disconnection_status.ilike("%OTHER%"), Payment.disconnection_status.ilike("%NORMAL%"))
-
+        # Category collection stats by joining Payment with Customer on unique customer_id
         pmt_stats_stmt = select(
-            func.coalesce(func.sum(case((pmt_is_td, Payment.amount), else_=0.0)), 0.0).label("td_collected"),
-            func.coalesce(func.sum(case((pmt_is_pd, Payment.amount), else_=0.0)), 0.0).label("pd_collected"),
-            func.coalesce(func.sum(case((pmt_is_bur, Payment.amount), else_=0.0)), 0.0).label("bur_collected"),
-            func.coalesce(func.sum(case((pmt_is_dis, Payment.amount), else_=0.0)), 0.0).label("dis_collected"),
-            func.coalesce(func.sum(case((pmt_is_other, Payment.amount), else_=0.0)), 0.0).label("other_collected"),
-            func.coalesce(func.sum(Payment.amount), 0.0).label("total_collected"),
-        ).select_from(Payment).outerjoin(
+            func.coalesce(func.sum(case((is_td, Payment.amount), else_=0.0)), 0.0).label("td_collected"),
+            func.coalesce(func.sum(case((is_pd, Payment.amount), else_=0.0)), 0.0).label("pd_collected"),
+            func.coalesce(func.sum(case((is_bur, Payment.amount), else_=0.0)), 0.0).label("bur_collected"),
+            func.coalesce(func.sum(case((is_dis, Payment.amount), else_=0.0)), 0.0).label("dis_collected"),
+            func.coalesce(func.sum(case((is_other, Payment.amount), else_=0.0)), 0.0).label("other_collected"),
+        ).select_from(Payment).join(
             Customer,
-            or_(
-                Payment.customer_id == Customer.customer_id,
-                and_(Payment.meter_number.isnot(None), Payment.meter_number != "", Payment.meter_number == Customer.meter_number)
-            )
-        ).where(Payment.officer_id.in_(filter_ids))
+            Payment.customer_id == Customer.customer_id
+        ).where(and_(*officer_cus_conds))
         pmt_stats_row = (await db.execute(pmt_stats_stmt)).first()
 
         td_collected = float(pmt_stats_row[0] or 0.0) if pmt_stats_row else 0.0
@@ -132,7 +117,12 @@ async def get_officer_dashboard(
         bur_collected = float(pmt_stats_row[2] or 0.0) if pmt_stats_row else 0.0
         dis_collected = float(pmt_stats_row[3] or 0.0) if pmt_stats_row else 0.0
         other_collected = float(pmt_stats_row[4] or 0.0) if pmt_stats_row else 0.0
-        total_collected_amount = float(pmt_stats_row[5] or 0.0) if pmt_stats_row else 0.0
+
+        # Total collected amount by this officer directly from Payment table
+        total_pmt_stmt = select(
+            func.coalesce(func.sum(Payment.amount), 0.0)
+        ).where(Payment.officer_id.in_(filter_ids))
+        total_collected_amount = float((await db.execute(total_pmt_stmt)).scalar() or 0.0)
 
         # Today's collected amount & count
         pmt_conds = [

@@ -104,7 +104,7 @@ export default function PaymentModal({
       meter_id: customer.meters?.[0]?.meter_id,
       amount: amt,
       payment_method: paymentMethod as any,
-      disconnection_status: ['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined,
+      disconnection_status: customer.disconnection_status || (['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined),
       remarks: remarks.trim() || undefined,
       collection_latitude: officerCoords?.latitude,
       collection_longitude: officerCoords?.longitude,

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Users, DollarSign, FileText, CheckCircle2, Target, Navigation, Clock, ChevronRight, Zap, Upload, AlertTriangle, ShieldAlert, Flame, PowerOff } from 'lucide-react';
 import { OfficerDashboardMetrics, Customer, PaymentRecord } from '@/types';
-import { formatCurrency } from '@/utils/formatters';
+import { formatCurrency, isCustomerInStatusCategory, getCustomerCollectedAmount } from '@/utils/formatters';
 import api from '@/services/api';
 import { useGeolocation } from '@/hooks/useGeolocation';
 import { customerService } from '@/services/customerService';
@@ -68,18 +68,9 @@ export default function OfficerDashboard() {
       });
 
       const computeCategoryStats = (type: string) => {
-        const target = type.toUpperCase().trim();
-        const list = safeCustomers.filter((c) => {
-          const ds = (c.disconnection_status || '').toUpperCase().trim();
-          const st = (c.status || '').toUpperCase().trim();
-          return ds === target || st === target || ds.includes(target) || st.includes(target);
-        });
+        const list = safeCustomers.filter((c) => isCustomerInStatusCategory(c, type));
         const pendingAmt = list.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
-        const collectedAmt = list.reduce((acc, c) => {
-          const direct = Number(c.collected_amount || 0);
-          const fromPmt = Number(pMap[c.customer_id] || (c.meter_number ? pMap[c.meter_number] : 0) || 0);
-          return acc + (direct > 0 ? direct : fromPmt);
-        }, 0);
+        const collectedAmt = list.reduce((acc, c) => acc + getCustomerCollectedAmount(c, pMap), 0);
         return { count: list.length, pendingAmt, collectedAmt };
       };
 
@@ -91,56 +82,34 @@ export default function OfficerDashboard() {
 
       const totalPaymentsSum = safePayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
       const totalPendingFromCusts = safeCustomers.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
+      const completedCountFromCusts = safeCustomers.filter(c => c.status === 'paid' || (Number(c.pending_amount) || 0) <= 0).length;
 
       const mergedMetrics: OfficerDashboardMetrics = {
         ...baseMetrics,
-        total_assigned_customers: baseMetrics.total_assigned_customers || safeCustomers.length,
-        total_pending_amount: (baseMetrics.total_pending_amount && baseMetrics.total_pending_amount > 0)
-          ? baseMetrics.total_pending_amount
-          : totalPendingFromCusts,
-        total_collected_amount: (baseMetrics.total_collected_amount && baseMetrics.total_collected_amount > 0)
-          ? baseMetrics.total_collected_amount
-          : totalPaymentsSum,
+        total_assigned_customers: safeCustomers.length > 0 ? safeCustomers.length : (baseMetrics.total_assigned_customers || 0),
+        total_pending_amount: safeCustomers.length > 0 ? totalPendingFromCusts : (baseMetrics.total_pending_amount || 0),
+        total_collected_amount: safePayments.length > 0 ? totalPaymentsSum : (baseMetrics.total_collected_amount || 0),
+        number_of_completed_collections: safeCustomers.length > 0 ? completedCountFromCusts : (baseMetrics.number_of_completed_collections || 0),
 
-        td_customers_count: baseMetrics.td_customers_count || tdStats.count,
-        td_pending_amount: (baseMetrics.td_pending_amount && baseMetrics.td_pending_amount > 0)
-          ? baseMetrics.td_pending_amount
-          : tdStats.pendingAmt,
-        td_collected_amount: (baseMetrics.td_collected_amount && baseMetrics.td_collected_amount > 0)
-          ? baseMetrics.td_collected_amount
-          : tdStats.collectedAmt,
+        td_customers_count: safeCustomers.length > 0 ? tdStats.count : (baseMetrics.td_customers_count || 0),
+        td_pending_amount: safeCustomers.length > 0 ? tdStats.pendingAmt : (baseMetrics.td_pending_amount || 0),
+        td_collected_amount: safeCustomers.length > 0 ? tdStats.collectedAmt : (baseMetrics.td_collected_amount || 0),
 
-        pd_customers_count: baseMetrics.pd_customers_count || pdStats.count,
-        pd_pending_amount: (baseMetrics.pd_pending_amount && baseMetrics.pd_pending_amount > 0)
-          ? baseMetrics.pd_pending_amount
-          : pdStats.pendingAmt,
-        pd_collected_amount: (baseMetrics.pd_collected_amount && baseMetrics.pd_collected_amount > 0)
-          ? baseMetrics.pd_collected_amount
-          : pdStats.collectedAmt,
+        pd_customers_count: safeCustomers.length > 0 ? pdStats.count : (baseMetrics.pd_customers_count || 0),
+        pd_pending_amount: safeCustomers.length > 0 ? pdStats.pendingAmt : (baseMetrics.pd_pending_amount || 0),
+        pd_collected_amount: safeCustomers.length > 0 ? pdStats.collectedAmt : (baseMetrics.pd_collected_amount || 0),
 
-        bur_customers_count: baseMetrics.bur_customers_count || burStats.count,
-        bur_pending_amount: (baseMetrics.bur_pending_amount && baseMetrics.bur_pending_amount > 0)
-          ? baseMetrics.bur_pending_amount
-          : burStats.pendingAmt,
-        bur_collected_amount: (baseMetrics.bur_collected_amount && baseMetrics.bur_collected_amount > 0)
-          ? baseMetrics.bur_collected_amount
-          : burStats.collectedAmt,
+        bur_customers_count: safeCustomers.length > 0 ? burStats.count : (baseMetrics.bur_customers_count || 0),
+        bur_pending_amount: safeCustomers.length > 0 ? burStats.pendingAmt : (baseMetrics.bur_pending_amount || 0),
+        bur_collected_amount: safeCustomers.length > 0 ? burStats.collectedAmt : (baseMetrics.bur_collected_amount || 0),
 
-        dis_customers_count: baseMetrics.dis_customers_count || disStats.count,
-        dis_pending_amount: (baseMetrics.dis_pending_amount && baseMetrics.dis_pending_amount > 0)
-          ? baseMetrics.dis_pending_amount
-          : disStats.pendingAmt,
-        dis_collected_amount: (baseMetrics.dis_collected_amount && baseMetrics.dis_collected_amount > 0)
-          ? baseMetrics.dis_collected_amount
-          : disStats.collectedAmt,
+        dis_customers_count: safeCustomers.length > 0 ? disStats.count : (baseMetrics.dis_customers_count || 0),
+        dis_pending_amount: safeCustomers.length > 0 ? disStats.pendingAmt : (baseMetrics.dis_pending_amount || 0),
+        dis_collected_amount: safeCustomers.length > 0 ? disStats.collectedAmt : (baseMetrics.dis_collected_amount || 0),
 
-        other_customers_count: baseMetrics.other_customers_count || otherStats.count,
-        other_pending_amount: (baseMetrics.other_pending_amount && baseMetrics.other_pending_amount > 0)
-          ? baseMetrics.other_pending_amount
-          : otherStats.pendingAmt,
-        other_collected_amount: (baseMetrics.other_collected_amount && baseMetrics.other_collected_amount > 0)
-          ? baseMetrics.other_collected_amount
-          : otherStats.collectedAmt,
+        other_customers_count: safeCustomers.length > 0 ? otherStats.count : (baseMetrics.other_customers_count || 0),
+        other_pending_amount: safeCustomers.length > 0 ? otherStats.pendingAmt : (baseMetrics.other_pending_amount || 0),
+        other_collected_amount: safeCustomers.length > 0 ? otherStats.collectedAmt : (baseMetrics.other_collected_amount || 0),
       };
 
       setMetrics(mergedMetrics);

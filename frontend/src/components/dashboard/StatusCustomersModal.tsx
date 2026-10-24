@@ -18,7 +18,13 @@ import Modal from '@/components/ui/Modal';
 import { Customer } from '@/types';
 import { customerService } from '@/services/customerService';
 import { paymentService } from '@/services/paymentService';
-import { formatCurrency, formatDate, getOverdueDays } from '@/utils/formatters';
+import {
+  formatCurrency,
+  formatDate,
+  getOverdueDays,
+  isCustomerInStatusCategory,
+  getCustomerCollectedAmount,
+} from '@/utils/formatters';
 
 interface StatusCustomersModalProps {
   isOpen: boolean;
@@ -108,12 +114,7 @@ export default function StatusCustomersModal({
       ]);
 
       const safeData = Array.isArray(data) ? data : [];
-      const filtered = safeData.filter((c) => {
-        const ds = (c.disconnection_status || '').toUpperCase().trim();
-        const st = (c.status || '').toUpperCase().trim();
-        const target = statusType.toUpperCase().trim();
-        return ds === target || st === target || ds.includes(target) || st.includes(target);
-      });
+      const filtered = safeData.filter((c) => isCustomerInStatusCategory(c, statusType));
       setCustomers(filtered);
 
       const pMap: Record<string, number> = {};
@@ -151,18 +152,13 @@ export default function StatusCustomersModal({
   }, [customers, searchQuery]);
 
   const totalAmount = useMemo(() => {
-    return filteredList.reduce((acc, c) => acc + (c.pending_amount || 0), 0);
+    return filteredList.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
   }, [filteredList]);
 
   // Exact collected money of these consumers only
   const totalCollected = useMemo(() => {
-    const sum = filteredList.reduce((acc, c) => {
-      const direct = Number(c.collected_amount || 0);
-      const fromPmt = Number(paymentsMap[c.customer_id] || (c.meter_number ? paymentsMap[c.meter_number] : 0) || 0);
-      return acc + (direct > 0 ? direct : fromPmt);
-    }, 0);
-    return sum > 0 ? sum : (collectedAmount || 0);
-  }, [filteredList, paymentsMap, collectedAmount]);
+    return filteredList.reduce((acc, c) => acc + getCustomerCollectedAmount(c, paymentsMap), 0);
+  }, [filteredList, paymentsMap]);
 
   if (!isOpen || !statusType) return null;
 
@@ -258,9 +254,7 @@ export default function StatusCustomersModal({
           <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
             {filteredList.map((cus) => {
               const overdueDays = getOverdueDays(cus.due_date);
-              const cusCollected = Number(cus.collected_amount || 0) > 0
-                ? Number(cus.collected_amount)
-                : Number(paymentsMap[cus.customer_id] || (cus.meter_number ? paymentsMap[cus.meter_number] : 0) || 0);
+              const cusCollected = getCustomerCollectedAmount(cus, paymentsMap);
 
               return (
                 <div

@@ -210,6 +210,52 @@ export function matchCustomerFilters(
   return true;
 }
 
+/**
+ * Determines whether a customer belongs to a specific disconnection/action status category.
+ * Priority order: TD -> PD -> BUR -> DIS -> OTHER (Normally Connected)
+ */
+export function isCustomerInStatusCategory(
+  customer: { disconnection_status?: string | null; status?: string | null },
+  category: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | string
+): boolean {
+  const cat = (category || '').toUpperCase().trim();
+  const custDisconn = String(customer.disconnection_status || '').toUpperCase().trim();
+  const custStatus = String(customer.status || '').toUpperCase().trim();
+
+  const isTD = custDisconn.includes('TD') || custStatus.includes('TD');
+  const isPD = !isTD && (custDisconn.includes('PD') || custStatus.includes('PD'));
+  const isBUR = !isTD && !isPD && (custDisconn.includes('BUR') || custStatus.includes('BUR'));
+  const isDIS = !isTD && !isPD && !isBUR && (
+    custDisconn.includes('DIS') || custDisconn.includes('DISPUT') ||
+    custStatus.includes('DIS') || custStatus.includes('DISPUT')
+  );
+  const isOTHER = !isTD && !isPD && !isBUR && !isDIS;
+
+  if (cat === 'TD') return isTD;
+  if (cat === 'PD') return isPD;
+  if (cat === 'BUR') return isBUR;
+  if (cat === 'DIS') return isDIS;
+  if (cat === 'OTHER' || cat === 'NORMAL') return isOTHER;
+  return false;
+}
+
+/**
+ * Accurately extracts the collected amount for a customer by checking direct collected_amount
+ * or mapping against the payments dictionary.
+ */
+export function getCustomerCollectedAmount(
+  customer: { customer_id: string; meter_number?: string | null; collected_amount?: number },
+  paymentsMap: Record<string, number> = {}
+): number {
+  const direct = Number(customer.collected_amount || 0);
+  const fromPmt = Number(
+    paymentsMap[customer.customer_id] ||
+    (customer.meter_number ? paymentsMap[customer.meter_number] : 0) ||
+    0
+  );
+  return direct > 0 ? direct : fromPmt;
+}
+
 export default {
   formatCurrency,
   formatDate,
@@ -218,4 +264,7 @@ export default {
   formatDuration,
   getOverdueDays,
   matchCustomerFilters,
+  isCustomerInStatusCategory,
+  getCustomerCollectedAmount,
 };
+
