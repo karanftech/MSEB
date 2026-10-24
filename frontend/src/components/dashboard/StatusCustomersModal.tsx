@@ -71,8 +71,8 @@ const STATUS_CONFIG: Record<
     icon: PowerOff,
   },
   OTHER: {
-    label: 'Normally Connected',
-    fullTitle: 'Normally Connected Meters',
+    label: 'NC (Normally Collected)',
+    fullTitle: 'NC (Normally Collected) Consumers',
     color: 'text-cyan-700',
     bg: 'bg-cyan-50',
     border: 'border-cyan-300',
@@ -210,7 +210,7 @@ export default function StatusCustomersModal({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Search ${statusType} consumers by name, meter #, DTC, address...`}
+              placeholder={`Search ${statusType === 'OTHER' ? 'NC' : statusType} consumers by name, meter #, DTC, address...`}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-8 py-2 text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
             />
             {searchQuery && (
@@ -264,7 +264,7 @@ export default function StatusCustomersModal({
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${config.bg} ${config.color} ${config.border}`}>
-                        {statusType}
+                        {statusType === 'OTHER' ? 'NC' : statusType}
                       </span>
                       <h4 className="font-extrabold text-slate-900 text-sm">{cus.name}</h4>
                       <span className="text-[11px] font-mono text-slate-500">({cus.customer_id})</span>

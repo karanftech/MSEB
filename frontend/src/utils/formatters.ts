@@ -235,7 +235,7 @@ export function isCustomerInStatusCategory(
   if (cat === 'PD') return isPD;
   if (cat === 'BUR') return isBUR;
   if (cat === 'DIS') return isDIS;
-  if (cat === 'OTHER' || cat === 'NORMAL') return isOTHER;
+  if (cat === 'OTHER' || cat === 'NORMAL' || cat === 'NC') return isOTHER;
   return false;
 }
 

@@ -526,12 +526,12 @@ export default function OfficerDashboard() {
             </div>
           </button>
 
-          {/* Card 5: Normally Collected (OTHER) */}
+          {/* Card 5: NC (Normally Collected) */}
           <button
             type="button"
             onClick={() => setStatusModalType('OTHER')}
             className="bg-white border border-cyan-200/90 hover:border-cyan-400 p-4 rounded-xl shadow-2xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-cyan-500"
-            title="Click to view all Normally Connected consumers"
+            title="Click to view all NC (Normally Collected) consumers"
           >
             <div className="flex items-center justify-between">
               <div className="w-8 h-8 rounded-lg bg-cyan-50 group-hover:bg-cyan-600 text-cyan-600 group-hover:text-white transition-colors flex items-center justify-center">
@@ -543,7 +543,7 @@ export default function OfficerDashboard() {
             </div>
             <div>
               <p className="text-[11px] text-slate-500 group-hover:text-cyan-900 font-bold uppercase transition-colors">
-                Normally Collected
+                NC (Normally Collected)
               </p>
               <div className="flex items-baseline justify-between mt-1">
                 <span className="text-2xl font-black text-slate-900 group-hover:text-cyan-700 transition-colors">

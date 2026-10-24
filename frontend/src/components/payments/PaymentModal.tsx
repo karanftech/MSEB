@@ -65,11 +65,11 @@ export default function PaymentModal({
       : 0;
 
   const paymentMethodsList = [
-    { key: 'other' as const, label: 'NC', desc: 'Normally Collected,},
-    { key: 'td' as const, label: 'TD', desc: 'Temporary Disconnection' },
-    { key: 'pd' as const, label: 'PD', desc: 'Permanent Disconnection' },
-    { key: 'bur' as const, label: 'BUR', desc: 'Bill Under Review' },
-    { key: 'dis' as const, label: 'DIS', desc: 'Dispute' },
+    { key: 'other' as const, label: 'NC (Normally Collected)' },
+    { key: 'td' as const, label: 'TD (Temporary Disconnect)' },
+    { key: 'pd' as const, label: 'PD (Permanent Disconnect)' },
+    { key: 'bur' as const, label: 'BUR (Bill Under Review)' },
+    { key: 'dis' as const, label: 'DIS (Dispute)' },
   ];
 
   const handlePreSubmit = (e: React.FormEvent) => {
@@ -251,7 +251,7 @@ export default function PaymentModal({
             >
               {paymentMethodsList.map((method) => (
                 <option key={method.key} value={method.key} className="py-1 font-semibold text-slate-800">
-                  {method.label} – {method.desc}
+                  {method.label}
                 </option>
               ))}
             </select>
