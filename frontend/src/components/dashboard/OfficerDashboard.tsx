@@ -557,7 +557,7 @@ export default function OfficerDashboard() {
             </div>
           </button>
 
-          {/* Card 5: Normally Connected (OTHER) */}
+          {/* Card 5: Normally Collected (OTHER) */}
           <button
             type="button"
             onClick={() => setStatusModalType('OTHER')}
@@ -574,7 +574,7 @@ export default function OfficerDashboard() {
             </div>
             <div>
               <p className="text-[11px] text-slate-500 group-hover:text-cyan-900 font-bold uppercase transition-colors">
-                Normally Connected
+                Normally Collected
               </p>
               <div className="flex items-baseline justify-between mt-1">
                 <span className="text-2xl font-black text-slate-900 group-hover:text-cyan-700 transition-colors">
