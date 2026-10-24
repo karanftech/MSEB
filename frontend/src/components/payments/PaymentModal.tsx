@@ -65,7 +65,7 @@ export default function PaymentModal({
       : 0;
 
   const paymentMethodsList = [
-    { key: 'other' as const, label: 'Normally Connected', desc: 'Active connected meter' },
+    { key: 'other' as const, label: 'NC', desc: 'Normally Collected,},
     { key: 'td' as const, label: 'TD', desc: 'Temporary Disconnection' },
     { key: 'pd' as const, label: 'PD', desc: 'Permanent Disconnection' },
     { key: 'bur' as const, label: 'BUR', desc: 'Bill Under Review' },
