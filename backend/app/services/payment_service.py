@@ -19,26 +19,9 @@ class PaymentService:
         request: PaymentCollectRequest,
         officer: Dict[str, Any]
     ) -> PaymentResponse:
-        # 1. Fetch Target Customer (prioritizing current officer's customer roster)
-        officer_id = officer.get("officer_id", str(officer.get("_id") or ""))
-        filter_ids = {officer_id, str(officer.get("_id") or ""), str(officer.get("id") or "")}
-        filter_ids.discard("")
-
-        stmt = select(Customer).where(
-            and_(
-                Customer.customer_id == request.customer_id,
-                or_(
-                    Customer.assigned_officer_id.in_(list(filter_ids)),
-                    Customer.uploaded_by_officer_id.in_(list(filter_ids))
-                )
-            )
-        )
-        customer = (await db.execute(stmt)).scalars().first()
-        if not customer:
-            # Fallback to general customer lookup if collecting for unassigned or cross-officer
-            fallback_stmt = select(Customer).where(Customer.customer_id == request.customer_id)
-            customer = (await db.execute(fallback_stmt)).scalars().first()
-
+        # 1. Fetch Target Customer
+        stmt = select(Customer).where(Customer.customer_id == request.customer_id)
+        customer = (await db.execute(stmt)).scalar_one_or_none()
         if not customer:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

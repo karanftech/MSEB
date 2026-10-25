@@ -150,41 +150,6 @@ async def init_db():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             logger.info("PostgreSQL database tables and spatial indexes initialized successfully.")
-
-            # 3. Migrate Customer constraints for user-specific data isolation
-            try:
-                # Drop legacy single-column global unique constraint if it exists
-                await conn.execute(text("""
-                    DO $$
-                    BEGIN
-                        IF EXISTS (
-                            SELECT 1 FROM pg_constraint WHERE conname = 'customers_customer_id_key'
-                        ) THEN
-                            ALTER TABLE customers DROP CONSTRAINT customers_customer_id_key;
-                        END IF;
-                    END $$;
-                """))
-                # Backfill any null uploaded_by_officer_id
-                await conn.execute(text("""
-                    UPDATE customers 
-                    SET uploaded_by_officer_id = COALESCE(assigned_officer_id, 'OFF-1001')
-                    WHERE uploaded_by_officer_id IS NULL;
-                """))
-                # Ensure deduplication for (customer_id, uploaded_by_officer_id) before creating unique index
-                await conn.execute(text("""
-                    DELETE FROM customers a USING customers b
-                    WHERE a.ctid < b.ctid 
-                      AND a.customer_id = b.customer_id 
-                      AND COALESCE(a.uploaded_by_officer_id, '') = COALESCE(b.uploaded_by_officer_id, '');
-                """))
-                # Create composite unique index
-                await conn.execute(text("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_customer_officer
-                    ON customers (customer_id, uploaded_by_officer_id);
-                """))
-                logger.info("User-scoped customer unique constraint verified.")
-            except Exception as mig_err:
-                logger.warning(f"Note on customer user-scoping constraint migration: {mig_err}")
     except Exception as exc:
         logger.error(f"PostgreSQL database table initialization error: {exc}")
 

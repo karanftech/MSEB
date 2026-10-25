@@ -248,18 +248,11 @@ class CustomerImportService:
         db: AsyncSession, 
         uploader_officer_id: Optional[str] = None,
         user_id_str: Optional[str] = None,
-        replace_all: bool = False,
+        replace_all: bool = True,
         uploader_officer_name: Optional[str] = None,
-        is_admin: bool = False,
-        mode: Optional[str] = "override"
+        is_admin: bool = False
     ) -> Dict[str, Any]:
-        """
-        Process rows and bulk upsert records into PostgreSQL using PostGIS.
-        Supports:
-        - mode='override': Updates/overrides existing customer records for this user, adds new ones.
-        - mode='replace' or replace_all=True: Replaces all records previously uploaded by or assigned to this user.
-        Preserves isolation: NEVER modifies or deletes another user's customer records.
-        """
+        """Process rows and bulk upsert records into PostgreSQL using PostGIS."""
         headers, data_rows = await CustomerImportService.parse_file_rows(file)
         mapping = CustomerImportService.get_column_mapping(headers)
 
@@ -454,48 +447,24 @@ class CustomerImportService:
             incoming_cust_ids = list(customers_to_upsert.keys())
             cus_list = list(customers_to_upsert.values())
 
-            is_replace_mode = (mode == "replace") or replace_all
-
-            # Build officer condition for user-scoping
-            officer_cus_cond = or_(
-                Customer.uploaded_by_officer_id.in_(list(officer_filter_ids)),
-                Customer.assigned_officer_id.in_(list(officer_filter_ids))
-            )
-            officer_mtr_cond = or_(
-                Meter.uploaded_by_officer_id.in_(list(officer_filter_ids)),
-                Meter.assigned_officer_id.in_(list(officer_filter_ids))
-            )
-
-            if is_replace_mode:
-                # User-Specific Replacement: Delete ONLY records belonging to THIS officer!
-                del_res = await db.execute(select(Customer.customer_id).where(officer_cus_cond))
-                existing_user_cids = list(del_res.scalars().all())
-                deleted_count = len(existing_user_cids)
-
-                if existing_user_cids:
-                    await db.execute(delete(Meter).where(or_(officer_mtr_cond, Meter.customer_id.in_(existing_user_cids))))
-                    await db.execute(delete(Payment).where(or_(Payment.officer_id.in_(list(officer_filter_ids)), Payment.customer_id.in_(existing_user_cids))))
-                else:
-                    await db.execute(delete(Meter).where(officer_mtr_cond))
-                    await db.execute(delete(Payment).where(Payment.officer_id.in_(list(officer_filter_ids))))
-
-                await db.execute(delete(Customer).where(officer_cus_cond))
+            if replace_all:
+                del_res = await db.execute(select(func.count(Customer.id)))
+                deleted_count = del_res.scalar() or 0
+                await db.execute(delete(Meter))
+                await db.execute(delete(Payment))
+                await db.execute(delete(Assignment))
+                await db.execute(delete(FieldVisit))
+                await db.execute(delete(Customer))
 
                 inserted_count = len(cus_list)
                 updated_count = 0
             else:
-                # Override / Merge Mode: check which of the incoming customers already exist for THIS officer
+                # In append mode, calculate existing vs new
+                existing_cust_ids = list(customers_to_upsert.keys())
                 existing_in_db = set()
                 for i in range(0, len(incoming_cust_ids), 500):
                     id_sub = incoming_cust_ids[i : i + 500]
-                    chk_res = await db.execute(
-                        select(Customer.customer_id).where(
-                            and_(
-                                Customer.customer_id.in_(id_sub),
-                                officer_cus_cond
-                            )
-                        )
-                    )
+                    chk_res = await db.execute(select(Customer.customer_id).where(Customer.customer_id.in_(id_sub)))
                     for row in chk_res.scalars().all():
                         existing_in_db.add(row)
 
@@ -503,44 +472,30 @@ class CustomerImportService:
                 inserted_count = len(cus_list) - updated_count
                 deleted_count = 0
 
-            # Batch upsert Customer records with user-scoped conflict resolution
+            # Batch upsert Customer records
             for i in range(0, len(cus_list), CHUNK_SIZE):
                 chunk = cus_list[i : i + CHUNK_SIZE]
                 stmt = pg_insert(Customer).values(chunk)
                 update_cols = {
                     c.name: stmt.excluded[c.name]
                     for c in Customer.__table__.columns
-                    if c.name not in ('id', 'customer_id', 'uploaded_by_officer_id', 'created_at')
+                    if c.name not in ('id', 'customer_id', 'created_at')
                 }
-                try:
-                    # Attempt conflict resolution on composite (customer_id, uploaded_by_officer_id)
-                    conflict_stmt = stmt.on_conflict_do_update(
-                        index_elements=['customer_id', 'uploaded_by_officer_id'],
-                        set_=update_cols
-                    )
-                    await db.execute(conflict_stmt)
-                except Exception:
-                    # Fallback to single-column customer_id conflict target if composite index not yet registered
-                    await db.rollback()
-                    fallback_stmt = stmt.on_conflict_do_update(
-                        index_elements=['customer_id'],
-                        set_=update_cols
-                    )
-                    await db.execute(fallback_stmt)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['customer_id'],
+                    set_=update_cols
+                )
+                await db.execute(stmt)
 
-            # Sync meters for this officer's customers
+            # Sync meters for uploaded customers
+            if not replace_all:
+                for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
+                    m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
+                    cust_ids = [m['customer_id'] for m in m_chunk]
+                    await db.execute(delete(Meter).where(Meter.customer_id.in_(cust_ids)))
+
             for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
                 m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
-                cids = [m['customer_id'] for m in m_chunk]
-                # Remove prior meters for these customers for this officer to avoid duplicates
-                await db.execute(
-                    delete(Meter).where(
-                        and_(
-                            Meter.customer_id.in_(cids),
-                            officer_mtr_cond
-                        )
-                    )
-                )
                 await db.execute(pg_insert(Meter).values(m_chunk))
 
             await db.commit()

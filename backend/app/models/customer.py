@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Index, UniqueConstraint
+from sqlalchemy import Column, String, Float, Index
 from sqlalchemy.orm import Mapped
 from geoalchemy2 import Geometry
 from typing import Optional, Any
@@ -16,7 +16,7 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id: Mapped[str] = Column(String(64), primary_key=True, default=gen_uuid)
-    customer_id: Mapped[str] = Column(String(100), index=True, nullable=False)
+    customer_id: Mapped[str] = Column(String(100), unique=True, index=True, nullable=False)
     name: Mapped[str] = Column(String(255), index=True, default="Consumer", nullable=False)
     meter_number: Mapped[Optional[str]] = Column(String(100), index=True, default="", nullable=True)
     phone: Mapped[Optional[str]] = Column(String(50), nullable=True)
@@ -45,10 +45,8 @@ class Customer(Base):
     created_at: Mapped[str] = Column(String(64), default=utc_now_str, nullable=False)
     updated_at: Mapped[Optional[str]] = Column(String(64), nullable=True)
 
-    __table_args__ = (
-        UniqueConstraint("customer_id", "uploaded_by_officer_id", name="uq_customers_customer_officer"),
-        Index("idx_customers_assigned_status", "assigned_officer_id", "status"),
-        Index("idx_customers_uploaded_status", "uploaded_by_officer_id", "status"),
-        Index("idx_customers_assigned_dtc", "assigned_officer_id", "dtc_code"),
-        Index("idx_customers_uploaded_dtc", "uploaded_by_officer_id", "dtc_code"),
-    )
+# Composite indexes for high-throughput queries
+Index("idx_customers_assigned_status", Customer.assigned_officer_id, Customer.status)
+Index("idx_customers_uploaded_status", Customer.uploaded_by_officer_id, Customer.status)
+Index("idx_customers_assigned_dtc", Customer.assigned_officer_id, Customer.dtc_code)
+Index("idx_customers_uploaded_dtc", Customer.uploaded_by_officer_id, Customer.dtc_code)
