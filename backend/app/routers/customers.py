@@ -11,6 +11,7 @@ from app.models.customer import Customer
 from app.models.meter import Meter
 from app.models.officer import Officer
 from app.models.payment import Payment
+from app.models.audit import Assignment, FieldVisit
 from app.schemas.customer import (
     CustomerCreate,
     CustomerUpdate,
@@ -419,12 +420,30 @@ async def get_customer(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = (current_user.get("role") == "admin")
+    filter_ids = list(officer_ctx["filter_ids"])
+
     stmt = select(Customer).where(Customer.customer_id == customer_id)
+    if not is_admin:
+        stmt = stmt.where(
+            or_(
+                Customer.assigned_officer_id.in_(filter_ids),
+                Customer.uploaded_by_officer_id.in_(filter_ids)
+            )
+        )
     cus = (await db.execute(stmt)).scalar_one_or_none()
     if not cus:
-        raise HTTPException(status_code=404, detail="Customer not found")
+        raise HTTPException(status_code=404, detail="Customer not found in your assigned records")
 
     m_stmt = select(Meter).where(Meter.customer_id == customer_id)
+    if not is_admin:
+        m_stmt = m_stmt.where(
+            or_(
+                Meter.assigned_officer_id.in_(filter_ids),
+                Meter.uploaded_by_officer_id.in_(filter_ids)
+            )
+        )
     meters_docs = (await db.execute(m_stmt)).scalars().all()
 
     meters = [
@@ -475,10 +494,21 @@ async def update_customer(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = (current_user.get("role") == "admin")
+    filter_ids = list(officer_ctx["filter_ids"])
+
     stmt = select(Customer).where(Customer.customer_id == customer_id)
+    if not is_admin:
+        stmt = stmt.where(
+            or_(
+                Customer.assigned_officer_id.in_(filter_ids),
+                Customer.uploaded_by_officer_id.in_(filter_ids)
+            )
+        )
     cus = (await db.execute(stmt)).scalar_one_or_none()
     if not cus:
-        raise HTTPException(status_code=404, detail="Customer not found")
+        raise HTTPException(status_code=404, detail="Customer not found in your assigned records")
 
     if request.name is not None:
         cus.name = request.name
@@ -518,8 +548,32 @@ async def delete_customer(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    await db.execute(delete(Customer).where(Customer.customer_id == customer_id))
-    await db.execute(delete(Meter).where(Meter.customer_id == customer_id))
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = (current_user.get("role") == "admin")
+    filter_ids = list(officer_ctx["filter_ids"])
+
+    stmt = select(Customer).where(Customer.customer_id == customer_id)
+    if not is_admin:
+        stmt = stmt.where(
+            or_(
+                Customer.assigned_officer_id.in_(filter_ids),
+                Customer.uploaded_by_officer_id.in_(filter_ids)
+            )
+        )
+    cus = (await db.execute(stmt)).scalar_one_or_none()
+    if not cus:
+        raise HTTPException(status_code=404, detail="Customer not found in your assigned records")
+
+    await db.execute(delete(Customer).where(Customer.id == cus.id))
+    m_stmt = delete(Meter).where(Meter.customer_id == customer_id)
+    if not is_admin:
+        m_stmt = m_stmt.where(
+            or_(
+                Meter.assigned_officer_id.in_(filter_ids),
+                Meter.uploaded_by_officer_id.in_(filter_ids)
+            )
+        )
+    await db.execute(m_stmt)
     await db.commit()
     await invalidate_customer_caches()
     return {"message": f"Customer '{customer_id}' deleted successfully"}
@@ -527,11 +581,11 @@ async def delete_customer(
 @router.post("/upload")
 async def upload_customers_bulk(
     file: UploadFile = File(...),
-    replace_all: bool = Query(True, description="Replace all old customer records before importing"),
+    replace_all: bool = Query(True, description="Replace all old customer records for this officer before importing"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Bulk import customer records from CSV or XLSX files into PostgreSQL."""
+    """Bulk import customer records with strict officer data isolation."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
 
@@ -553,15 +607,69 @@ async def upload_customers_bulk(
 @router.delete("/clear-all")
 @router.post("/clear-all")
 async def clear_all_customers(
+    all_officers: Optional[bool] = Query(False, description="Admin-only: clear records across all officers"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Clear all customers, meters, payments, and related cache."""
-    await db.execute(delete(Meter))
-    await db.execute(delete(Payment))
-    await db.execute(delete(Assignment))
-    await db.execute(delete(FieldVisit))
-    await db.execute(delete(Customer))
+    """Clear customer records with strict officer-scoped protection."""
+    officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = (current_user.get("role") == "admin")
+    filter_ids = list(officer_ctx["filter_ids"])
+
+    if is_admin and all_officers:
+        await db.execute(delete(Meter))
+        await db.execute(delete(Payment))
+        await db.execute(delete(Assignment))
+        await db.execute(delete(FieldVisit))
+        await db.execute(delete(Customer))
+        msg = "All system customer records cleared successfully."
+    else:
+        # Field officer (or default clear) only clears THIS officer's data
+        officer_cus_cond = or_(
+            Customer.uploaded_by_officer_id.in_(filter_ids),
+            Customer.assigned_officer_id.in_(filter_ids)
+        )
+        officer_mtr_cond = or_(
+            Meter.uploaded_by_officer_id.in_(filter_ids),
+            Meter.assigned_officer_id.in_(filter_ids)
+        )
+        del_res = await db.execute(select(Customer.customer_id).where(officer_cus_cond))
+        user_cids = list(del_res.scalars().all())
+
+        if user_cids:
+            await db.execute(
+                delete(Payment).where(
+                    or_(
+                        Payment.officer_id.in_(filter_ids),
+                        Payment.customer_id.in_(user_cids)
+                    )
+                )
+            )
+            await db.execute(
+                delete(FieldVisit).where(
+                    or_(
+                        FieldVisit.officer_id.in_(filter_ids),
+                        FieldVisit.customer_id.in_(user_cids)
+                    )
+                )
+            )
+            await db.execute(
+                delete(Meter).where(
+                    or_(
+                        Meter.customer_id.in_(user_cids),
+                        officer_mtr_cond
+                    )
+                )
+            )
+        else:
+            await db.execute(delete(Payment).where(Payment.officer_id.in_(filter_ids)))
+            await db.execute(delete(FieldVisit).where(FieldVisit.officer_id.in_(filter_ids)))
+            await db.execute(delete(Meter).where(officer_mtr_cond))
+
+        await db.execute(delete(Assignment).where(Assignment.officer_id.in_(filter_ids)))
+        await db.execute(delete(Customer).where(officer_cus_cond))
+        msg = f"All customer records, meters, visits, and collection payments for {officer_ctx['officer_name']} ({officer_ctx['officer_id']}) cleared successfully."
+
     await db.commit()
     await invalidate_customer_caches()
-    return {"success": True, "message": "All previous data cleared successfully"}
+    return {"success": True, "message": msg}

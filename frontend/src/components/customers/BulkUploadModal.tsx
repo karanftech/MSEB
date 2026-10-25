@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, X, FileSpreadsheet, Download, CheckCircle, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
 import { customerService } from '@/services/customerService';
+import { useAuth } from '@/hooks/useAuth';
 
 interface BulkUploadModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface BulkUploadModalProps {
 }
 
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
+  const { user } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadResult, setUploadResult] = useState<{
@@ -45,18 +47,20 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   };
 
   const handleDownloadSampleCSV = () => {
+    // Generate distinct sample consumer numbers to avoid accidental collisions across different officer accounts
+    const prefix = user?.id ? String(user.id).replace(/\D/g, '').slice(-4) || '1001' : '1001';
     const csvContent = [
       'consumer_no,consumer_name,meter_id,dtc_code,latitude,longitude,pending_amount,days_pending',
-      '0441001001,Rajesh Kumar,MTR89901,0441001,21.1458,79.0882,4500,45',
-      '0441001002,Pooja Sharma,MTR89902,0441002,21.1390,79.0720,1850,15',
-      '0441001003,Anil Deshmukh,MTR89903,0441001,21.1245,79.0680,8900,60',
+      `044${prefix}001,Rajesh Kumar,MTR${prefix}1,044${prefix},21.1458,79.0882,4500,45`,
+      `044${prefix}002,Pooja Sharma,MTR${prefix}2,044${prefix},21.1390,79.0720,1850,15`,
+      `044${prefix}003,Anil Deshmukh,MTR${prefix}3,044${prefix},21.1245,79.0680,8900,60`,
     ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'sample_customers_import.csv');
+    link.setAttribute('download', `sample_customers_${prefix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -82,7 +86,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   };
 
   const handleClearAllData = async () => {
-    if (!confirm('Are you sure you want to clear all existing customer records, meters, and collections to start fresh?')) {
+    if (!confirm('Are you sure you want to clear your previously recorded data (customers, meters, visits, and collected payments) to start fresh? This will not affect other officers\' records.')) {
       return;
     }
     setIsClearing(true);
@@ -93,7 +97,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       onSuccess();
       resetModal();
     } catch (err: any) {
-      setErrorMessage(err.response?.data?.detail || 'Failed to clear existing customer data.');
+      setErrorMessage(err.response?.data?.detail || 'Failed to clear your customer data.');
     } finally {
       setIsClearing(false);
     }
@@ -117,7 +121,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900">Bulk Import Customers</h3>
-              <p className="text-xs text-slate-500">Upload CSV or Excel (.xlsx) files to seed customer records</p>
+              <p className="text-xs text-slate-500">Upload CSV or Excel (.xlsx) to replace your consumer list &amp; collections</p>
             </div>
           </div>
           <button
@@ -278,10 +282,10 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
               onClick={handleClearAllData}
               disabled={isClearing || isUploading}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold text-xs rounded-md transition-colors cursor-pointer"
-              title="Delete all previous consumers and start with a clean slate"
+              title="Delete your previously uploaded consumers, visits, and collected payments to start fresh (does not affect other officers)"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              {isClearing ? 'Clearing...' : 'Clear All Old Data'}
+              {isClearing ? 'Clearing...' : 'Clear My Old Data'}
             </button>
           )}
 

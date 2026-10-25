@@ -447,24 +447,84 @@ class CustomerImportService:
             incoming_cust_ids = list(customers_to_upsert.keys())
             cus_list = list(customers_to_upsert.values())
 
+            # Define user-scoped filters to ensure we NEVER delete or affect another officer's records
+            filter_id_list = list(officer_filter_ids)
+            officer_cus_cond = or_(
+                Customer.uploaded_by_officer_id.in_(filter_id_list),
+                Customer.assigned_officer_id.in_(filter_id_list)
+            )
+            officer_mtr_cond = or_(
+                Meter.uploaded_by_officer_id.in_(filter_id_list),
+                Meter.assigned_officer_id.in_(filter_id_list)
+            )
+
             if replace_all:
-                del_res = await db.execute(select(func.count(Customer.id)))
-                deleted_count = del_res.scalar() or 0
-                await db.execute(delete(Meter))
-                await db.execute(delete(Payment))
-                await db.execute(delete(Assignment))
-                await db.execute(delete(FieldVisit))
-                await db.execute(delete(Customer))
+                # Find only previous customer IDs uploaded by / assigned to THIS officer
+                del_res = await db.execute(select(Customer.customer_id).where(officer_cus_cond))
+                existing_user_cids = list(del_res.scalars().all())
+                deleted_count = len(existing_user_cids)
+
+                # Delete ALL previous records belonging to THIS officer:
+                # 1. Collected Payments / Transactions
+                if existing_user_cids:
+                    await db.execute(
+                        delete(Payment).where(
+                            or_(
+                                Payment.officer_id.in_(filter_id_list),
+                                Payment.customer_id.in_(existing_user_cids)
+                            )
+                        )
+                    )
+                else:
+                    await db.execute(delete(Payment).where(Payment.officer_id.in_(filter_id_list)))
+
+                # 2. Field Visits
+                if existing_user_cids:
+                    await db.execute(
+                        delete(FieldVisit).where(
+                            or_(
+                                FieldVisit.officer_id.in_(filter_id_list),
+                                FieldVisit.customer_id.in_(existing_user_cids)
+                            )
+                        )
+                    )
+                else:
+                    await db.execute(delete(FieldVisit).where(FieldVisit.officer_id.in_(filter_id_list)))
+
+                # 3. Target Assignments
+                await db.execute(delete(Assignment).where(Assignment.officer_id.in_(filter_id_list)))
+
+                # 4. Meters linked to this officer's previous customers or tagged to this officer
+                if existing_user_cids:
+                    await db.execute(
+                        delete(Meter).where(
+                            or_(
+                                Meter.customer_id.in_(existing_user_cids),
+                                officer_mtr_cond
+                            )
+                        )
+                    )
+                else:
+                    await db.execute(delete(Meter).where(officer_mtr_cond))
+
+                # 5. Customers belonging to THIS officer
+                await db.execute(delete(Customer).where(officer_cus_cond))
 
                 inserted_count = len(cus_list)
                 updated_count = 0
             else:
-                # In append mode, calculate existing vs new
-                existing_cust_ids = list(customers_to_upsert.keys())
+                # In append mode, calculate existing vs new for THIS officer
                 existing_in_db = set()
                 for i in range(0, len(incoming_cust_ids), 500):
                     id_sub = incoming_cust_ids[i : i + 500]
-                    chk_res = await db.execute(select(Customer.customer_id).where(Customer.customer_id.in_(id_sub)))
+                    chk_res = await db.execute(
+                        select(Customer.customer_id).where(
+                            and_(
+                                Customer.customer_id.in_(id_sub),
+                                officer_cus_cond
+                            )
+                        )
+                    )
                     for row in chk_res.scalars().all():
                         existing_in_db.add(row)
 
@@ -487,15 +547,18 @@ class CustomerImportService:
                 )
                 await db.execute(stmt)
 
-            # Sync meters for uploaded customers
-            if not replace_all:
-                for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
-                    m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
-                    cust_ids = [m['customer_id'] for m in m_chunk]
-                    await db.execute(delete(Meter).where(Meter.customer_id.in_(cust_ids)))
-
+            # Sync meters for uploaded customers (clean up meter duplicates for the incoming customer IDs for this officer)
             for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
                 m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
+                cust_ids = [m['customer_id'] for m in m_chunk]
+                await db.execute(
+                    delete(Meter).where(
+                        and_(
+                            Meter.customer_id.in_(cust_ids),
+                            officer_mtr_cond
+                        )
+                    )
+                )
                 await db.execute(pg_insert(Meter).values(m_chunk))
 
             await db.commit()
