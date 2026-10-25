@@ -117,7 +117,11 @@ export const customerService = {
     return response.data;
   },
 
-  async uploadCustomers(file: File, replaceAll: boolean = true): Promise<{
+  async uploadCustomers(
+    file: File, 
+    replaceAll: boolean = false, 
+    mode: 'override' | 'replace' = 'override'
+  ): Promise<{
     success: boolean;
     filename: string;
     total_processed: number;
@@ -128,7 +132,7 @@ export const customerService = {
   }> {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await api.post(`/api/customers/upload?replace_all=${replaceAll}`, formData, {
+    const response = await api.post(`/api/customers/upload?replace_all=${replaceAll}&mode=${mode}`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -137,8 +141,8 @@ export const customerService = {
     return response.data;
   },
 
-  async clearAllCustomers(): Promise<{ success: boolean; message: string }> {
-    const response = await api.delete('/api/customers/clear-all');
+  async clearAllCustomers(allOfficers: boolean = false): Promise<{ success: boolean; message: string }> {
+    const response = await api.delete(`/api/customers/clear-all?all_officers=${allOfficers}`);
     this.clearCache();
     return response.data;
   },
