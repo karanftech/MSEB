@@ -283,10 +283,12 @@ async def list_customers(
     return results
 
 async def invalidate_customer_caches():
-    """Purge cached customer lists, DTC filters, and dashboard metrics on data change."""
+    """Purge cached customer lists, DTC filters, dashboard metrics, reports, and payments on data change."""
     await cache_service.clear_prefix("customers:")
     await cache_service.clear_prefix("dashboard:")
     await cache_service.clear_prefix("dtc_codes:")
+    await cache_service.clear_prefix("reports:")
+    await cache_service.clear_prefix("payments:")
 
 @router.post("", response_model=CustomerResponse)
 async def create_customer(
@@ -534,6 +536,7 @@ async def upload_customers_bulk(
         raise HTTPException(status_code=400, detail="No file uploaded.")
 
     officer_ctx = await get_or_create_officer_context(db, current_user)
+    is_admin = (current_user.get("role") == "admin")
 
     result = await CustomerImportService.import_customers(
         file=file,
@@ -541,7 +544,24 @@ async def upload_customers_bulk(
         uploader_officer_id=officer_ctx["officer_id"],
         user_id_str=officer_ctx["user_id"],
         replace_all=replace_all,
-        uploader_officer_name=officer_ctx["officer_name"]
+        uploader_officer_name=officer_ctx["officer_name"],
+        is_admin=is_admin
     )
     await invalidate_customer_caches()
     return result
+
+@router.delete("/clear-all")
+@router.post("/clear-all")
+async def clear_all_customers(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Clear all customers, meters, payments, and related cache."""
+    await db.execute(delete(Meter))
+    await db.execute(delete(Payment))
+    await db.execute(delete(Assignment))
+    await db.execute(delete(FieldVisit))
+    await db.execute(delete(Customer))
+    await db.commit()
+    await invalidate_customer_caches()
+    return {"success": True, "message": "All previous data cleared successfully"}

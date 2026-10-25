@@ -128,7 +128,13 @@ function MapPageContent() {
   useEffect(() => {
     loadCustomers();
 
-    const handleCustUpdate = () => loadCustomers();
+    const handleCustUpdate = () => {
+      setTemporarilyRemovedCustomerIds(new Set());
+      setSelectedCustomer(null);
+      setMultiRoute(null);
+      setIsMultiNavigating(false);
+      loadCustomers();
+    };
     window.addEventListener('customers-updated', handleCustUpdate);
     return () => window.removeEventListener('customers-updated', handleCustUpdate);
   }, [targetCusId]);

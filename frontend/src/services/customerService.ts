@@ -31,6 +31,12 @@ if (typeof window !== 'undefined') {
   window.addEventListener('auth-change', () => {
     cacheStore.clear();
   });
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'mv_data_updated') {
+      cacheStore.clear();
+      window.dispatchEvent(new CustomEvent('customers-updated'));
+    }
+  });
 }
 
 export const customerService = {
@@ -38,6 +44,11 @@ export const customerService = {
     cacheStore.clear();
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('customers-updated'));
+      try {
+        localStorage.setItem('mv_data_updated', Date.now().toString());
+      } catch {
+        // ignore storage errors
+      }
     }
   },
 
@@ -122,6 +133,12 @@ export const customerService = {
         'Content-Type': 'multipart/form-data',
       },
     });
+    this.clearCache();
+    return response.data;
+  },
+
+  async clearAllCustomers(): Promise<{ success: boolean; message: string }> {
+    const response = await api.delete('/api/customers/clear-all');
     this.clearCache();
     return response.data;
   },

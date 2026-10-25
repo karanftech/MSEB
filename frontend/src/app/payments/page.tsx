@@ -27,6 +27,10 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     fetchPayments();
+
+    const handleUpdate = () => fetchPayments();
+    window.addEventListener('customers-updated', handleUpdate);
+    return () => window.removeEventListener('customers-updated', handleUpdate);
   }, []);
 
   const filteredPayments = payments.filter((p) => {

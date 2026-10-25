@@ -114,6 +114,7 @@ async def login(
         "officer@electricity.gov.in": ("OFF-1001", "Field Officer 1"),
         "officer1@electricity.gov.in": ("OFF-1002", "Field Officer 2"),
         "officer@mahavitaran.in": ("OFF-1003", "Field Officer 3"),
+        "officer.nagpur@maharashtra.gov.in": ("OFF-1004", "Nagpur Field Officer"),
     }
 
     # Auto-seed default officer account for demo emails

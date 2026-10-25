@@ -64,6 +64,12 @@ export default function ReportsPage() {
     fetchReportData();
   }, [statusFilter, debouncedSearch]);
 
+  useEffect(() => {
+    const handleUpdate = () => fetchReportData();
+    window.addEventListener('customers-updated', handleUpdate);
+    return () => window.removeEventListener('customers-updated', handleUpdate);
+  }, [statusFilter, debouncedSearch]);
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     fetchReportData();
@@ -82,7 +88,7 @@ export default function ReportsPage() {
     'Contacted',
     'Unavailable',
     'Meter Issue',
-    'Other / Followup',
+    'NC (Normally Collected)',
   ];
 
   return (
@@ -222,12 +228,12 @@ export default function ReportsPage() {
             <p className="text-xs font-bold text-purple-700">Meter Issue</p>
           </div>
 
-          {/* Other / Followup */}
+          {/* NC (Normally Collected) */}
           <div className="bg-slate-100/70 border border-slate-200 rounded-xl p-4 text-center space-y-1">
             <span className="text-2xl font-black text-slate-600">
-              {data?.breakdown?.['Other / Followup'] ?? 0}
+              {data?.breakdown?.['NC (Normally Collected)'] ?? data?.breakdown?.['Other / Followup'] ?? 0}
             </span>
-            <p className="text-xs font-bold text-slate-700">Other / Followup</p>
+            <p className="text-xs font-bold text-slate-700">NC (Normally Collected)</p>
           </div>
         </div>
       </div>

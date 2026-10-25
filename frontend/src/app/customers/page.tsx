@@ -65,12 +65,19 @@ export default function CustomersPage() {
     fetchCustomers();
   }, [debouncedSearch, statusFilter, dtcFilter]);
 
+  useEffect(() => {
+    const handleUpdate = () => {
+      fetchDtcCodes();
+      fetchCustomers();
+    };
+    window.addEventListener('customers-updated', handleUpdate);
+    return () => window.removeEventListener('customers-updated', handleUpdate);
+  }, [debouncedSearch, statusFilter, dtcFilter]);
+
   const handleUploadSuccess = () => {
     customerService.clearCache();
     fetchDtcCodes();
     fetchCustomers();
-    // Broadcast custom event for other listeners
-    window.dispatchEvent(new Event('customers-updated'));
   };
 
   return (

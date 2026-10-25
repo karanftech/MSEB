@@ -29,7 +29,7 @@ import {
 interface StatusCustomersModalProps {
   isOpen: boolean;
   onClose: () => void;
-  statusType: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null;
+  statusType: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | 'NC' | null;
   collectedAmount?: number;
   onCollectPayment?: (customer: Customer) => void;
 }
@@ -69,6 +69,14 @@ const STATUS_CONFIG: Record<
     bg: 'bg-indigo-50',
     border: 'border-indigo-300',
     icon: PowerOff,
+  },
+  NC: {
+    label: 'NC (Normally Collected)',
+    fullTitle: 'NC (Normally Collected) Consumers',
+    color: 'text-cyan-700',
+    bg: 'bg-cyan-50',
+    border: 'border-cyan-300',
+    icon: Zap,
   },
   OTHER: {
     label: 'NC (Normally Collected)',
@@ -113,10 +121,6 @@ export default function StatusCustomersModal({
         paymentService.getPayments({ limit: 500 }).catch(() => [])
       ]);
 
-      const safeData = Array.isArray(data) ? data : [];
-      const filtered = safeData.filter((c) => isCustomerInStatusCategory(c, statusType));
-      setCustomers(filtered);
-
       const pMap: Record<string, number> = {};
       (Array.isArray(payments) ? payments : []).forEach((p) => {
         const amt = Number(p.amount || 0);
@@ -124,6 +128,10 @@ export default function StatusCustomersModal({
         if (p.meter_number) pMap[p.meter_number] = (pMap[p.meter_number] || 0) + amt;
       });
       setPaymentsMap(pMap);
+
+      const safeData = Array.isArray(data) ? data : [];
+      const filtered = safeData.filter((c) => isCustomerInStatusCategory(c, statusType, pMap));
+      setCustomers(filtered);
     } catch (err) {
       console.error('Failed to load status customers', err);
     } finally {
@@ -181,7 +189,9 @@ export default function StatusCustomersModal({
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 mt-0.5">
-                Special action category for collection and field meter verification.
+                {statusType === 'OTHER' || statusType === 'NC'
+                  ? 'Consumers with normally collected bill payments.'
+                  : 'Special action category for collection and field meter verification.'}
               </p>
             </div>
           </div>
@@ -238,16 +248,20 @@ export default function StatusCustomersModal({
         {loading ? (
           <div className="py-12 text-center space-y-2">
             <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p className="text-xs text-slate-500 font-semibold">Loading {statusType} customer list...</p>
+            <p className="text-xs text-slate-500 font-semibold">Loading {statusType === 'OTHER' || statusType === 'NC' ? 'NC' : statusType} customer list...</p>
           </div>
         ) : filteredList.length === 0 ? (
           <div className="py-12 text-center bg-slate-50 rounded-xl border border-slate-200 space-y-2 p-6">
             <IconComponent className="w-8 h-8 text-slate-300 mx-auto" />
-            <p className="font-bold text-slate-700 text-sm">No {statusType} customers found</p>
+            <p className="font-bold text-slate-700 text-sm">
+              {statusType === 'OTHER' || statusType === 'NC' ? 'No NC Collected Consumers Yet' : `No ${statusType} customers found`}
+            </p>
             <p className="text-xs text-slate-400 max-w-sm mx-auto">
               {searchQuery
                 ? `No results matching "${searchQuery}". Try a different keyword.`
-                : `Currently there are no consumers marked as ${statusType}. You can mark meters as ${statusType} via Collect Payment.`}
+                : (statusType === 'OTHER' || statusType === 'NC')
+                ? 'Only consumers with collected payments are listed under NC (Normally Collected). As payments are collected from consumers, they will appear here.'
+                : `Currently there are no consumers marked as ${statusType}. You can mark meters via Collect Payment.`}
             </p>
           </div>
         ) : (
@@ -264,7 +278,7 @@ export default function StatusCustomersModal({
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${config.bg} ${config.color} ${config.border}`}>
-                        {statusType === 'OTHER' ? 'NC' : statusType}
+                        {statusType === 'OTHER' || statusType === 'NC' ? 'NC' : statusType}
                       </span>
                       <h4 className="font-extrabold text-slate-900 text-sm">{cus.name}</h4>
                       <span className="text-[11px] font-mono text-slate-500">({cus.customer_id})</span>

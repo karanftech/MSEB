@@ -21,11 +21,17 @@ export default function ReceiptView({ isOpen, paymentRecord, onClose }: ReceiptV
     window.print();
   };
 
+  const rawMethod = paymentRecord.payment_method?.toLowerCase() || '';
   const formattedMethod =
-    paymentRecord.payment_method?.toLowerCase() === 'upi' ? 'UPI / ONLINE'
-    : paymentRecord.payment_method?.toLowerCase() === 'cheque' ? 'CHEQUE'
-    : paymentRecord.payment_method?.toLowerCase() === 'cash' ? 'CASH'
-    : paymentRecord.payment_method?.toUpperCase() || 'OTHER';
+    rawMethod === 'upi' ? 'UPI / ONLINE'
+    : rawMethod === 'cheque' ? 'CHEQUE'
+    : rawMethod === 'cash' ? 'CASH'
+    : rawMethod === 'other' || rawMethod === 'nc' ? 'NC (Normally Collected)'
+    : rawMethod === 'td' ? 'TD (Temporary Disconnect)'
+    : rawMethod === 'pd' ? 'PD (Permanent Disconnect)'
+    : rawMethod === 'bur' ? 'BUR (Bill Under Review)'
+    : rawMethod === 'dis' ? 'DIS (Dispute)'
+    : paymentRecord.payment_method?.toUpperCase() || 'NC (Normally Collected)';
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Mahavitaran Collection Receipt" maxWidth="max-w-lg">

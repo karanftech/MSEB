@@ -106,6 +106,8 @@ async def get_officer_dashboard(
             func.coalesce(func.sum(case((is_bur, Payment.amount), else_=0.0)), 0.0).label("bur_collected"),
             func.coalesce(func.sum(case((is_dis, Payment.amount), else_=0.0)), 0.0).label("dis_collected"),
             func.coalesce(func.sum(case((is_other, Payment.amount), else_=0.0)), 0.0).label("other_collected"),
+            func.count(func.distinct(case((is_other, Customer.id)))).label("other_collected_count"),
+            func.coalesce(func.sum(case((is_other, func.coalesce(Customer.pending_amount, 0.0)), else_=0.0)), 0.0).label("other_collected_pending"),
         ).select_from(Payment).join(
             Customer,
             Payment.customer_id == Customer.customer_id
@@ -117,6 +119,9 @@ async def get_officer_dashboard(
         bur_collected = float(pmt_stats_row[2] or 0.0) if pmt_stats_row else 0.0
         dis_collected = float(pmt_stats_row[3] or 0.0) if pmt_stats_row else 0.0
         other_collected = float(pmt_stats_row[4] or 0.0) if pmt_stats_row else 0.0
+        # For NC (Normally Collected), only report consumers with collected payments
+        other_count = int(pmt_stats_row[5] or 0) if pmt_stats_row else 0
+        other_amount = float(pmt_stats_row[6] or 0.0) if pmt_stats_row else 0.0
 
         # Total collected amount by this officer directly from Payment table
         total_pmt_stmt = select(

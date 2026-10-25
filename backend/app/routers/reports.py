@@ -91,7 +91,8 @@ async def get_field_performance_report(
         "Contacted": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Contacted")),
         "Unavailable": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Unavailable")),
         "Meter Issue": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Meter Issue")),
-        "Other / Followup": len(set(v["consumer_id"] for v in visit_docs if v.get("status") == "Other / Followup")),
+        "NC (Normally Collected)": len(set(v["consumer_id"] for v in visit_docs if v.get("status") in ["NC (Normally Collected)", "Other / Followup"])),
+        "Other / Followup": len(set(v["consumer_id"] for v in visit_docs if v.get("status") in ["NC (Normally Collected)", "Other / Followup"])),
     }
 
     filtered_visits = visit_docs

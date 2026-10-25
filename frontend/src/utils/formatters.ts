@@ -215,8 +215,15 @@ export function matchCustomerFilters(
  * Priority order: TD -> PD -> BUR -> DIS -> OTHER (Normally Connected)
  */
 export function isCustomerInStatusCategory(
-  customer: { disconnection_status?: string | null; status?: string | null },
-  category: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | string
+  customer: {
+    disconnection_status?: string | null;
+    status?: string | null;
+    collected_amount?: number;
+    customer_id?: string;
+    meter_number?: string | null;
+  },
+  category: 'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | 'NC' | string,
+  paymentsMap?: Record<string, number>
 ): boolean {
   const cat = (category || '').toUpperCase().trim();
   const custDisconn = String(customer.disconnection_status || '').toUpperCase().trim();
@@ -235,7 +242,18 @@ export function isCustomerInStatusCategory(
   if (cat === 'PD') return isPD;
   if (cat === 'BUR') return isBUR;
   if (cat === 'DIS') return isDIS;
-  if (cat === 'OTHER' || cat === 'NORMAL' || cat === 'NC') return isOTHER;
+  if (cat === 'OTHER' || cat === 'NORMAL' || cat === 'NC') {
+    if (!isOTHER) return false;
+    // NC (Normally Collected) -> ONLY show consumers whose payment has been collected
+    const directCollected = Number(customer.collected_amount || 0);
+    const pmtCollected = paymentsMap ? Number(
+      (customer.customer_id && paymentsMap[customer.customer_id]) ||
+      (customer.meter_number && paymentsMap[customer.meter_number]) ||
+      0
+    ) : 0;
+    const isPaid = custStatus === 'PAID' || custStatus === 'PARTIALLY_PAID';
+    return directCollected > 0 || pmtCollected > 0 || isPaid;
+  }
   return false;
 }
 

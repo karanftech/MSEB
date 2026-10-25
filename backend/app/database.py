@@ -14,8 +14,38 @@ import app.models  # noqa: F401
 
 logger = logging.getLogger("uvicorn.error")
 
+import json
+import urllib.request
+
+# Cache for resolved hostnames to prevent redundant DNS lookups
+_DNS_CACHE = {}
+
+def _resolve_doh_sync(hostname: str):
+    if hostname in _DNS_CACHE:
+        return _DNS_CACHE[hostname]
+    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", hostname):
+        return [hostname]
+    for doh_url in [
+        f"https://dns.google/resolve?name={hostname}&type=A",
+        f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A"
+    ]:
+        try:
+            req = urllib.request.Request(
+                doh_url,
+                headers={"Accept": "application/dns-json", "User-Agent": "Mahavitaran-Backend"}
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+                ips = [ans["data"] for ans in data.get("Answer", []) if ans.get("type") == 1]
+                if ips:
+                    _DNS_CACHE[hostname] = ips
+                    return ips
+        except Exception:
+            continue
+    return []
+
 # Patch asyncio base getaddrinfo on Windows to prefer AF_INET (IPv4)
-# preventing socket.gaierror [Errno 11001] getaddrinfo failed on Neon Cloud CNAME endpoints
+# and fallback to DoH (DNS-over-HTTPS) if Windows local DNS server fails ([Errno 11001])
 try:
     _orig_getaddrinfo = asyncio.base_events.BaseEventLoop.getaddrinfo
 
@@ -23,7 +53,15 @@ try:
         try:
             return await _orig_getaddrinfo(self, host, port, family=family, type=type, proto=proto, flags=flags)
         except socket.gaierror:
-            return await _orig_getaddrinfo(self, host, port, family=socket.AF_INET, type=type, proto=proto, flags=flags)
+            try:
+                return await _orig_getaddrinfo(self, host, port, family=socket.AF_INET, type=type, proto=proto, flags=flags)
+            except socket.gaierror:
+                if isinstance(host, str) and not host.startswith("localhost") and not host.startswith("127."):
+                    ips = await self.run_in_executor(None, _resolve_doh_sync, host)
+                    if ips:
+                        logger.info(f"[DNS Resilience] Resolved '{host}' to {ips[0]} via fallback DoH.")
+                        return await _orig_getaddrinfo(self, ips[0], port, family=socket.AF_INET, type=type, proto=proto, flags=flags)
+                raise
 
     asyncio.base_events.BaseEventLoop.getaddrinfo = _resilient_getaddrinfo
 except Exception:
@@ -73,6 +111,8 @@ engine = create_async_engine(
     clean_db_url,
     echo=False,
     pool_pre_ping=True,
+    pool_recycle=300,
+    pool_timeout=30,
     pool_size=10,
     max_overflow=20,
     connect_args=connect_args
@@ -93,21 +133,25 @@ async def init_db():
     2. Creates all tables from SQLAlchemy models
     3. Verifies geometry(Point, 4326) spatial tables
     """
-    logger.info("Connecting to PostgreSQL 18 (Neon Cloud) with PostGIS...")
+    logger.info("Connecting to PostgreSQL 18 (Neon Cloud)...")
+    # 1. Enable PostGIS extension if permitted
     try:
         async with engine.begin() as conn:
-            # PostGIS Extension
             try:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
                 logger.info("PostGIS extension initialized successfully.")
             except Exception as e:
-                logger.warning(f"Note on CREATE EXTENSION postgis (may already exist or managed): {e}")
+                logger.warning(f"Note on PostGIS extension: {e}")
+    except Exception:
+        pass
 
-            # Create all tables and spatial geometry columns
+    # 2. Create all tables and spatial geometry columns in a clean transaction
+    try:
+        async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             logger.info("PostgreSQL database tables and spatial indexes initialized successfully.")
     except Exception as exc:
-        logger.error(f"PostgreSQL connection / initialization error: {exc}")
+        logger.error(f"PostgreSQL database table initialization error: {exc}")
 
 async def close_db():
     """Close PostgreSQL connection pool."""

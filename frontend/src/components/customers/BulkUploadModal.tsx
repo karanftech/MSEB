@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import { Upload, X, FileSpreadsheet, Download, CheckCircle, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Upload, X, FileSpreadsheet, Download, CheckCircle, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
 import { customerService } from '@/services/customerService';
 
 interface BulkUploadModalProps {
@@ -21,6 +21,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     errors: string[];
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isClearing, setIsClearing] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -77,6 +78,24 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       setErrorMessage(msg);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleClearAllData = async () => {
+    if (!confirm('Are you sure you want to clear all existing customer records, meters, and collections to start fresh?')) {
+      return;
+    }
+    setIsClearing(true);
+    setErrorMessage(null);
+    try {
+      await customerService.clearAllCustomers();
+      window.dispatchEvent(new Event('customers-updated'));
+      onSuccess();
+      resetModal();
+    } catch (err: any) {
+      setErrorMessage(err.response?.data?.detail || 'Failed to clear existing customer data.');
+    } finally {
+      setIsClearing(false);
     }
   };
 
@@ -254,7 +273,16 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
               Upload Another File
             </button>
           ) : (
-            <div></div>
+            <button
+              type="button"
+              onClick={handleClearAllData}
+              disabled={isClearing || isUploading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold text-xs rounded-md transition-colors cursor-pointer"
+              title="Delete all previous consumers and start with a clean slate"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {isClearing ? 'Clearing...' : 'Clear All Old Data'}
+            </button>
           )}
 
           <div className="flex items-center gap-2">

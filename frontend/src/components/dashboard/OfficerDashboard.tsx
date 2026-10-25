@@ -24,7 +24,7 @@ export default function OfficerDashboard() {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [isAssignedModalOpen, setIsAssignedModalOpen] = useState<boolean>(false);
   const [assignedModalFilter, setAssignedModalFilter] = useState<'all' | 'pending' | 'completed'>('all');
-  const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | null>(null);
+  const [statusModalType, setStatusModalType] = useState<'TD' | 'PD' | 'BUR' | 'DIS' | 'OTHER' | 'NC' | null>(null);
   const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null);
   const [receiptRecord, setReceiptRecord] = useState<PaymentRecord | null>(null);
 
@@ -68,7 +68,7 @@ export default function OfficerDashboard() {
       });
 
       const computeCategoryStats = (type: string) => {
-        const list = safeCustomers.filter((c) => isCustomerInStatusCategory(c, type));
+        const list = safeCustomers.filter((c) => isCustomerInStatusCategory(c, type, pMap));
         const pendingAmt = list.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
         const collectedAmt = list.reduce((acc, c) => acc + getCustomerCollectedAmount(c, pMap), 0);
         return { count: list.length, pendingAmt, collectedAmt };
@@ -187,9 +187,12 @@ export default function OfficerDashboard() {
       {/* Bulk Upload Modal */}
       <BulkUploadModal
         isOpen={isUploadModalOpen}
-        onClose={() => setIsUploadModalOpen(false)}
+        onClose={() => {
+          setIsUploadModalOpen(false);
+          fetchDashboard(true);
+        }}
         onSuccess={() => {
-          fetchDashboard();
+          fetchDashboard(true);
         }}
       />
 
@@ -210,7 +213,7 @@ export default function OfficerDashboard() {
           statusModalType === 'PD' ? (metrics.pd_collected_amount || 0) :
           statusModalType === 'BUR' ? (metrics.bur_collected_amount || 0) :
           statusModalType === 'DIS' ? (metrics.dis_collected_amount || 0) :
-          statusModalType === 'OTHER' ? (metrics.other_collected_amount || 0) : 0
+          (statusModalType === 'OTHER' || statusModalType === 'NC') ? (metrics.other_collected_amount || 0) : 0
         }
         onCollectPayment={(cust) => {
           setPaymentCustomer(cust);
@@ -529,7 +532,7 @@ export default function OfficerDashboard() {
           {/* Card 5: NC (Normally Collected) */}
           <button
             type="button"
-            onClick={() => setStatusModalType('OTHER')}
+            onClick={() => setStatusModalType('NC')}
             className="bg-white border border-cyan-200/90 hover:border-cyan-400 p-4 rounded-xl shadow-2xs hover:shadow-md transition-all active:scale-[0.98] cursor-pointer text-left space-y-1.5 group relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-cyan-500"
             title="Click to view all NC (Normally Collected) consumers"
           >

@@ -17,7 +17,7 @@ interface PaymentModalProps {
   onSuccess: (paymentRecord: PaymentRecord) => void;
 }
 
-export type PaymentMethodType = 'td' | 'pd' | 'bur' | 'dis' | 'other';
+export type PaymentMethodType = 'nc' | 'td' | 'pd' | 'bur' | 'dis' | 'other';
 
 export default function PaymentModal({
   isOpen,
@@ -29,7 +29,7 @@ export default function PaymentModal({
   const { isOnline, refreshQueueCount } = useOffline();
 
   const [collectedAmount, setCollectedAmount] = useState<string>('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('other');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('nc');
   const [remarks, setRemarks] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isConfirmOpen, setIsConfirmOpen] = useState<boolean>(false);
@@ -45,7 +45,7 @@ export default function PaymentModal({
       );
       setError(null);
       setRemarks('');
-      setPaymentMethod('other');
+      setPaymentMethod('nc');
       setIsConfirmOpen(false);
     }
   }, [customer, isOpen]);
@@ -65,7 +65,7 @@ export default function PaymentModal({
       : 0;
 
   const paymentMethodsList = [
-    { key: 'other' as const, label: 'NC (Normally Collected)' },
+    { key: 'nc' as const, label: 'NC (Normally Collected)' },
     { key: 'td' as const, label: 'TD (Temporary Disconnect)' },
     { key: 'pd' as const, label: 'PD (Permanent Disconnect)' },
     { key: 'bur' as const, label: 'BUR (Bill Under Review)' },
@@ -77,7 +77,7 @@ export default function PaymentModal({
     setError(null);
 
     const amt = parseFloat(collectedAmount);
-    const isStatusMode = ['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod);
+    const isStatusMode = ['td', 'pd', 'bur', 'dis', 'other', 'nc'].includes(paymentMethod);
 
     if (isNaN(amt) || (isStatusMode ? amt < 0 : amt <= 0)) {
       setError(isStatusMode ? 'Please enter a valid amount (>= 0).' : 'Please enter a valid collection amount greater than 0.');
@@ -99,12 +99,15 @@ export default function PaymentModal({
 
     const amt = parseFloat(collectedAmount) || 0;
 
+    const isNC = paymentMethod === 'nc' || paymentMethod === 'other';
+    const effectiveStatus = isNC ? 'NC' : paymentMethod.toUpperCase();
+
     const payload = {
       customer_id: customer.customer_id,
       meter_id: customer.meters?.[0]?.meter_id,
       amount: amt,
-      payment_method: paymentMethod as any,
-      disconnection_status: customer.disconnection_status || (['td', 'pd', 'bur', 'dis', 'other'].includes(paymentMethod) ? paymentMethod.toUpperCase() : undefined),
+      payment_method: isNC ? 'nc' : (paymentMethod as any),
+      disconnection_status: effectiveStatus,
       remarks: remarks.trim() || undefined,
       collection_latitude: officerCoords?.latitude,
       collection_longitude: officerCoords?.longitude,
@@ -127,8 +130,8 @@ export default function PaymentModal({
           officer_id: customer.assigned_officer_id || 'OFF-1001',
           officer_name: 'Field Officer (Offline Queue)',
           amount: amt,
-          payment_method: paymentMethod.toUpperCase(),
-          disconnection_status: payload.disconnection_status,
+          payment_method: isNC ? 'NC' : paymentMethod.toUpperCase(),
+          disconnection_status: effectiveStatus,
           remarks: remarks || 'Collected in offline mode',
           previous_pending_amount: customer.pending_amount,
           remaining_pending_amount: Math.max(0, customer.pending_amount - amt),
@@ -339,7 +342,7 @@ export default function PaymentModal({
               <div className="flex justify-between">
                 <span className="text-slate-500 font-medium">Mode / Status:</span>
                 <span className="font-extrabold text-blue-700 uppercase bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                  {paymentMethod.toUpperCase()}
+                  {['nc', 'other'].includes(paymentMethod) ? 'NC (Normally Collected)' : paymentMethod.toUpperCase()}
                 </span>
               </div>
               <div className="flex justify-between text-[11px] font-bold">

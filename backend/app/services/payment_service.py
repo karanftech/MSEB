@@ -60,8 +60,12 @@ class PaymentService:
         officer_id = officer.get("officer_id", str(officer.get("_id")))
 
         disconn_status = request.disconnection_status
-        if not disconn_status and request.payment_method.lower() in ["td", "pd", "bur", "dis", "other"]:
-            disconn_status = request.payment_method.upper()
+        if not disconn_status and request.payment_method.lower() in ["td", "pd", "bur", "dis", "other", "nc"]:
+            disconn_status = "NC" if request.payment_method.lower() in ["other", "nc"] else request.payment_method.upper()
+        elif disconn_status and disconn_status.upper() in ["OTHER", "NC"]:
+            disconn_status = "NC"
+
+        stored_method = "nc" if request.payment_method.lower() in ["other", "nc"] else request.payment_method.lower()
 
         pt_geom = None
         if request.collection_latitude is not None and request.collection_longitude is not None:
@@ -78,7 +82,7 @@ class PaymentService:
             officer_id=officer_id,
             officer_name=officer_name,
             amount=collected_amount,
-            payment_method=request.payment_method.lower(),
+            payment_method=stored_method,
             disconnection_status=disconn_status,
             transaction_reference=request.transaction_reference,
             remarks=request.remarks,

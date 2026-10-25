@@ -14,6 +14,8 @@ from fastapi import UploadFile, HTTPException
 
 from app.models.customer import Customer
 from app.models.meter import Meter
+from app.models.payment import Payment
+from app.models.audit import Assignment, FieldVisit
 from app.database import point_wkt
 
 logger = logging.getLogger("uvicorn.error")
@@ -134,11 +136,24 @@ class CustomerImportService:
                 mapping['due_date'] = idx
                 break
 
-        # Priority 10: Disconnection Status
+        # Priority 10: Disconnection Status / Meter Action Status
         for idx, h in enumerate(normalized):
-            if any(k in h for k in ['disconnection_status', 'meter_status', 'disconnection', 'status_code', 'category', 'action']):
-                mapping['disconnection_status'] = idx
-                break
+            if any(k == h for k in [
+                'disconnection_status', 'disconnection status', 'disconn_status', 'disconn status',
+                'disc_status', 'disc status', 'disconnection', 'disconn', 'meter_status', 'meter status',
+                'status_code', 'status code', 'category', 'action', 'action_type', 'action status',
+                'conn_status', 'connection_status', 'connection status', 'rc_dc', 'rc/dc', 'dc_status',
+                'supply_status', 'supply status', 'status', 'consumer_status', 'remark', 'remarks', 'sub_status'
+            ]):
+                if not any(skip in h for skip in ['incharge', 'section', 'bill_status', 'payment_status', 'officer']):
+                    mapping['disconnection_status'] = idx
+                    break
+        if 'disconnection_status' not in mapping:
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ['disconn', 'disc', 'status', 'action', 'category', 'rc_dc', 'rc/dc', 'remark']):
+                    if not any(skip in h for skip in ['incharge', 'section', 'bill', 'payment', 'pay', 'officer', 'name', 'phone']):
+                        mapping['disconnection_status'] = idx
+                        break
 
         # Fallback if customer_id not found
         if 'customer_id' not in mapping and len(headers) > 0:
@@ -234,7 +249,8 @@ class CustomerImportService:
         uploader_officer_id: Optional[str] = None,
         user_id_str: Optional[str] = None,
         replace_all: bool = True,
-        uploader_officer_name: Optional[str] = None
+        uploader_officer_name: Optional[str] = None,
+        is_admin: bool = False
     ) -> Dict[str, Any]:
         """Process rows and bulk upsert records into PostgreSQL using PostGIS."""
         headers, data_rows = await CustomerImportService.parse_file_rows(file)
@@ -328,17 +344,18 @@ class CustomerImportService:
                 status = "overdue" if pending_amount > 3000 else ("pending" if pending_amount > 0 else "paid")
                 priority = "high" if pending_amount > 5000 else "normal"
 
-                raw_disconn = get_val('disconnection_status', '').upper()
-                disconn_status = None
-                if 'DISPUT' in raw_disconn:
+                raw_disconn = get_val('disconnection_status', '').upper().strip()
+                disconn_status = 'NC'
+                if any(k in raw_disconn for k in ['TEMPORARY', 'TEMP', 'TD', 'T.D.']):
+                    disconn_status = 'TD'
+                elif any(k in raw_disconn for k in ['PERMANENT', 'PERM', 'PD', 'P.D.']):
+                    disconn_status = 'PD'
+                elif any(k in raw_disconn for k in ['BURNT', 'BURN', 'BUR', 'DEFECTIVE', 'FAULTY']):
+                    disconn_status = 'BUR'
+                elif any(k in raw_disconn for k in ['DISPUT', 'COURT', 'LITIGATION', 'DIS', 'D.I.S.']):
                     disconn_status = 'DIS'
-                elif 'NORMAL' in raw_disconn:
-                    disconn_status = 'OTHER'
-                else:
-                    for cat in ['TD', 'PD', 'BUR', 'DIS', 'OTHER']:
-                        if cat in raw_disconn:
-                            disconn_status = cat
-                            break
+                elif any(k in raw_disconn for k in ['NORMAL', 'CONNECTED', 'LIVE', 'REGULAR', 'NC', 'N.C.', 'OTHER', 'OK']):
+                    disconn_status = 'NC'
 
                 officer_id_to_assign = uploader_officer_id or user_id_str or "OFF-1001"
 
@@ -427,61 +444,17 @@ class CustomerImportService:
                     detail="Upload rejected: Unable to identify the target officer account."
                 )
 
-            # Check for customer_ids in this upload that belong to other officers.
-            # If any exist, namespace them with this officer's ID so Officer 2 never overrides Officer 1's records!
             incoming_cust_ids = list(customers_to_upsert.keys())
-            other_officer_cust_ids = set()
-            for i in range(0, len(incoming_cust_ids), 500):
-                sub = incoming_cust_ids[i : i + 500]
-                chk = await db.execute(
-                    select(Customer.customer_id).where(
-                        and_(
-                            Customer.customer_id.in_(sub),
-                            ~Customer.uploaded_by_officer_id.in_(officer_filter_ids),
-                            ~Customer.assigned_officer_id.in_(officer_filter_ids)
-                        )
-                    )
-                )
-                for c_id in chk.scalars().all():
-                    other_officer_cust_ids.add(c_id)
-
-            if other_officer_cust_ids:
-                for c_id in other_officer_cust_ids:
-                    scoped_id = f"{uploader_officer_id or 'OFF'}_{c_id}"
-                    if c_id in customers_to_upsert:
-                        item = customers_to_upsert.pop(c_id)
-                        item["customer_id"] = scoped_id
-                        customers_to_upsert[scoped_id] = item
-                for m in meters_to_upsert:
-                    if m["customer_id"] in other_officer_cust_ids:
-                        m["customer_id"] = f"{uploader_officer_id or 'OFF'}_{m['customer_id']}"
-
             cus_list = list(customers_to_upsert.values())
 
             if replace_all:
-                # Strictly scope deletion to the specific officer credentials ONLY.
-                # Never perform an unconditional delete across all officers!
-                officer_cust_cond = or_(
-                    Customer.assigned_officer_id.in_(officer_filter_ids),
-                    Customer.uploaded_by_officer_id.in_(officer_filter_ids)
-                )
-                del_count_stmt = select(func.count(Customer.id)).where(officer_cust_cond)
-                del_res = await db.execute(del_count_stmt)
+                del_res = await db.execute(select(func.count(Customer.id)))
                 deleted_count = del_res.scalar() or 0
-
-                # Find customer_ids belonging to this officer so their meters are cleaned
-                cust_ids_res = await db.execute(select(Customer.customer_id).where(officer_cust_cond))
-                existing_officer_cust_ids = [r for r in cust_ids_res.scalars().all() if r]
-
-                meter_or_conditions = [
-                    Meter.assigned_officer_id.in_(officer_filter_ids),
-                    Meter.uploaded_by_officer_id.in_(officer_filter_ids)
-                ]
-                if existing_officer_cust_ids:
-                    meter_or_conditions.append(Meter.customer_id.in_(existing_officer_cust_ids))
-
-                await db.execute(delete(Meter).where(or_(*meter_or_conditions)))
-                await db.execute(delete(Customer).where(officer_cust_cond))
+                await db.execute(delete(Meter))
+                await db.execute(delete(Payment))
+                await db.execute(delete(Assignment))
+                await db.execute(delete(FieldVisit))
+                await db.execute(delete(Customer))
 
                 inserted_count = len(cus_list)
                 updated_count = 0
@@ -489,8 +462,8 @@ class CustomerImportService:
                 # In append mode, calculate existing vs new
                 existing_cust_ids = list(customers_to_upsert.keys())
                 existing_in_db = set()
-                for i in range(0, len(existing_cust_ids), 500):
-                    id_sub = existing_cust_ids[i : i + 500]
+                for i in range(0, len(incoming_cust_ids), 500):
+                    id_sub = incoming_cust_ids[i : i + 500]
                     chk_res = await db.execute(select(Customer.customer_id).where(Customer.customer_id.in_(id_sub)))
                     for row in chk_res.scalars().all():
                         existing_in_db.add(row)
@@ -499,6 +472,7 @@ class CustomerImportService:
                 inserted_count = len(cus_list) - updated_count
                 deleted_count = 0
 
+            # Batch upsert Customer records
             for i in range(0, len(cus_list), CHUNK_SIZE):
                 chunk = cus_list[i : i + CHUNK_SIZE]
                 stmt = pg_insert(Customer).values(chunk)
@@ -513,19 +487,15 @@ class CustomerImportService:
                 )
                 await db.execute(stmt)
 
-            # Sync meters for uploaded customers (scoped to this officer)
+            # Sync meters for uploaded customers
+            if not replace_all:
+                for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
+                    m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
+                    cust_ids = [m['customer_id'] for m in m_chunk]
+                    await db.execute(delete(Meter).where(Meter.customer_id.in_(cust_ids)))
+
             for i in range(0, len(meters_to_upsert), CHUNK_SIZE):
                 m_chunk = meters_to_upsert[i : i + CHUNK_SIZE]
-                cust_ids = [m['customer_id'] for m in m_chunk]
-                await db.execute(delete(Meter).where(
-                    and_(
-                        Meter.customer_id.in_(cust_ids),
-                        or_(
-                            Meter.assigned_officer_id.in_(officer_filter_ids),
-                            Meter.uploaded_by_officer_id.in_(officer_filter_ids)
-                        )
-                    )
-                ))
                 await db.execute(pg_insert(Meter).values(m_chunk))
 
             await db.commit()
