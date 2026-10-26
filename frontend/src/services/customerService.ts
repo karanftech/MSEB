@@ -117,6 +117,12 @@ export const customerService = {
     return response.data;
   },
 
+  async updateCustomer(customerId: string, data: Partial<Customer>): Promise<Customer> {
+    const response = await api.put<Customer>(`/api/customers/${customerId}`, data);
+    this.clearCache();
+    return response.data;
+  },
+
   async uploadCustomers(file: File, replaceAll: boolean = true): Promise<{
     success: boolean;
     filename: string;

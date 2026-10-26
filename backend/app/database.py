@@ -44,9 +44,27 @@ def _resolve_doh_sync(hostname: str):
             continue
     return []
 
-# Patch asyncio base getaddrinfo on Windows to prefer AF_INET (IPv4)
+# Patch socket.getaddrinfo and asyncio base getaddrinfo on Windows to prefer AF_INET (IPv4)
 # and fallback to DoH (DNS-over-HTTPS) if Windows local DNS server fails ([Errno 11001])
 try:
+    _orig_socket_getaddrinfo = socket.getaddrinfo
+
+    def _resilient_socket_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        try:
+            return _orig_socket_getaddrinfo(host, port, family, type, proto, flags)
+        except socket.gaierror:
+            try:
+                return _orig_socket_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+            except socket.gaierror:
+                if isinstance(host, str) and not host.startswith("localhost") and not host.startswith("127."):
+                    ips = _resolve_doh_sync(host)
+                    if ips:
+                        logger.info(f"[DNS Resilience] Resolved '{host}' to {ips[0]} via fallback DoH.")
+                        return _orig_socket_getaddrinfo(ips[0], port, socket.AF_INET, type, proto, flags)
+                raise
+
+    socket.getaddrinfo = _resilient_socket_getaddrinfo
+
     _orig_getaddrinfo = asyncio.base_events.BaseEventLoop.getaddrinfo
 
     async def _resilient_getaddrinfo(self, host, port, *, family=0, type=0, proto=0, flags=0):

@@ -82,13 +82,19 @@ export default function OfficerDashboard() {
 
       const totalPaymentsSum = safePayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
       const totalPendingFromCusts = safeCustomers.reduce((acc, c) => acc + (Number(c.pending_amount) || 0), 0);
+      const totalCollectedFromCusts = safeCustomers.reduce((acc, c) => acc + getCustomerCollectedAmount(c, pMap), 0);
+      const effectiveCollectedSum = Math.max(totalPaymentsSum, totalCollectedFromCusts);
+      const totalAssignedBillAmount = safeCustomers.length > 0
+        ? safeCustomers.reduce((acc, c) => acc + (Number(c.pending_amount) || 0) + getCustomerCollectedAmount(c, pMap), 0)
+        : ((baseMetrics.total_pending_amount || 0) + (baseMetrics.total_collected_amount || 0));
       const completedCountFromCusts = safeCustomers.filter(c => c.status === 'paid' || (Number(c.pending_amount) || 0) <= 0).length;
 
       const mergedMetrics: OfficerDashboardMetrics = {
         ...baseMetrics,
         total_assigned_customers: safeCustomers.length > 0 ? safeCustomers.length : (baseMetrics.total_assigned_customers || 0),
+        total_assigned_amount: totalAssignedBillAmount,
         total_pending_amount: safeCustomers.length > 0 ? totalPendingFromCusts : (baseMetrics.total_pending_amount || 0),
-        total_collected_amount: safePayments.length > 0 ? totalPaymentsSum : (baseMetrics.total_collected_amount || 0),
+        total_collected_amount: effectiveCollectedSum > 0 ? effectiveCollectedSum : (baseMetrics.total_collected_amount || 0),
         number_of_completed_collections: safeCustomers.length > 0 ? completedCountFromCusts : (baseMetrics.number_of_completed_collections || 0),
 
         td_customers_count: safeCustomers.length > 0 ? tdStats.count : (baseMetrics.td_customers_count || 0),
@@ -297,8 +303,12 @@ export default function OfficerDashboard() {
             <span className="text-2xl font-black text-slate-900 group-hover:text-blue-600 transition-colors">
               {metrics.total_assigned_customers}
             </span>
-            <span className="text-xs font-bold text-slate-500">
-              {formatCurrency(metrics.total_pending_amount)}
+            <span className="text-xs font-bold text-slate-500 group-hover:text-blue-600 transition-colors">
+              {formatCurrency(
+                metrics.total_assigned_amount !== undefined && metrics.total_assigned_amount > 0
+                  ? metrics.total_assigned_amount
+                  : ((Number(metrics.total_pending_amount) || 0) + (Number(metrics.total_collected_amount) || Number(metrics.todays_collected_amount) || 0))
+              )}
             </span>
           </div>
         </button>

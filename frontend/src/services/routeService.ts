@@ -35,11 +35,10 @@ export function decodePolyline(encoded: string): Coordinates[] {
 }
 
 const OSRM_SERVERS = [
-  'https://routing.openstreetmap.de/routed-car/route/v1/driving',
   'https://router.project-osrm.org/route/v1/driving',
 ];
 
-async function fetchWithTimeout(url: string, timeoutMs = 3500): Promise<Response> {
+async function fetchWithTimeout(url: string, timeoutMs = 6000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -55,37 +54,13 @@ async function fetchWithTimeout(url: string, timeoutMs = 3500): Promise<Response
 // In-memory route cache to avoid redundant network queries on UI re-renders
 const singleRouteCache = new Map<string, { data: RouteCalculationResult; ts: number }>();
 const multiRouteCache = new Map<string, { data: MultiRouteCalculationResult; ts: number }>();
-const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
 /**
- * Creates realistic road-following corridor coordinates between two points
- * when remote routing engines are offline or unreachable, avoiding unnatural straight diagonal lines.
+ * Direct connection coordinates between two points without artificial right-angle turns.
  */
 function buildRoadCorridorCoordinates(origin: Coordinates, destination: Coordinates): Coordinates[] {
-  const dLat = destination.latitude - origin.latitude;
-  const dLng = destination.longitude - origin.longitude;
-  const distKm = calculateHaversineDistance(origin.latitude, origin.longitude, destination.latitude, destination.longitude) / 1000;
-
-  if (distKm < 0.2) {
-    return [origin, destination];
-  }
-
-  const coords: Coordinates[] = [origin];
-  const stepsCount = Math.min(12, Math.max(4, Math.floor(distKm * 2.5)));
-
-  for (let i = 1; i < stepsCount; i++) {
-    const fraction = i / stepsCount;
-    // Stepwise arterial road progression: first primary axis, then secondary axis with smooth transitions
-    const latInterp = origin.latitude + dLat * (Math.sin((fraction * Math.PI) / 2) * 0.85 + fraction * 0.15);
-    const lngInterp = origin.longitude + dLng * (fraction * 0.85 + Math.sin((fraction * Math.PI) / 2) * 0.15);
-    coords.push({
-      latitude: Number(latInterp.toFixed(6)),
-      longitude: Number(lngInterp.toFixed(6)),
-    });
-  }
-
-  coords.push(destination);
-  return coords;
+  return [origin, destination];
 }
 
 /**
@@ -299,11 +274,16 @@ export const routeService = {
             priority: c.priority || 'normal',
           })),
         },
-        { timeout: 12000 }
+        { timeout: 30000 }
       );
       if (response.data && response.data.coordinates_path?.length >= 2) {
-        multiRouteCache.set(cacheKey, { data: response.data, ts: Date.now() });
-        return response.data;
+        // Only accept if backend returned genuine street geometry (many points per stop)
+        // If it only has ~1 point per customer, it was a straight-line fallback
+        const hasRealStreetGeometry = response.data.coordinates_path.length > (targetCustomers.length + 1) * 2;
+        if (hasRealStreetGeometry) {
+          multiRouteCache.set(cacheKey, { data: response.data, ts: Date.now() });
+          return response.data;
+        }
       }
     } catch (err) {
       // Backend calculate-multi offline or timed out, use fast client-side batched multi-routing
@@ -362,6 +342,38 @@ export const routeService = {
       currentLng = nextCust.longitude;
     }
 
+    // 2. 2-Opt refinement for route uncrossing and natural street sequence
+    let improved = true;
+    let iterations = 0;
+    while (improved && iterations < 35) {
+      improved = false;
+      iterations++;
+      for (let i = 0; i < orderedCustomers.length - 1; i++) {
+        for (let j = i + 1; j < orderedCustomers.length; j++) {
+          const p1 = i === 0 ? origin : orderedCustomers[i - 1];
+          const p2 = orderedCustomers[i];
+          const p3 = orderedCustomers[j];
+          const p4 = j + 1 < orderedCustomers.length ? orderedCustomers[j + 1] : null;
+
+          const currentDist =
+            calculateHaversineDistance(p1.latitude, p1.longitude, p2.latitude, p2.longitude) +
+            (p4 ? calculateHaversineDistance(p3.latitude, p3.longitude, p4.latitude, p4.longitude) : 0);
+
+          const reversedDist =
+            calculateHaversineDistance(p1.latitude, p1.longitude, p3.latitude, p3.longitude) +
+            (p4 ? calculateHaversineDistance(p2.latitude, p2.longitude, p4.latitude, p4.longitude) : 0);
+
+          if (reversedDist < currentDist - 0.0001) {
+            const sub = orderedCustomers.slice(i, j + 1).reverse();
+            orderedCustomers.splice(i, sub.length, ...sub);
+            improved = true;
+            break;
+          }
+        }
+        if (improved) break;
+      }
+    }
+
     // Sequence of points: [Origin, Stop 1, Stop 2, ..., Stop N]
     const allPoints: Coordinates[] = [origin, ...orderedCustomers.map((c) => ({ latitude: c.latitude, longitude: c.longitude }))];
 
@@ -370,20 +382,39 @@ export const routeService = {
     let totalDur = 0;
     const stops: any[] = [];
 
-    // 2. Batch points in groups of up to 20 coordinates and query OSRM in a SINGLE request per batch
-    const BATCH_SIZE = 20;
+    // 3. Batch points in groups of up to 12 coordinates:
+    // Tight 45m radius prevents snapping to parallel expressways/highways while capturing residential streets
+    const BATCH_SIZE = 12;
 
     for (let b = 0; b < allPoints.length - 1; b += (BATCH_SIZE - 1)) {
       const batchPoints = allPoints.slice(b, b + BATCH_SIZE);
       if (batchPoints.length < 2) break;
 
       const coordsParam = batchPoints.map((p) => `${p.longitude},${p.latitude}`).join(';');
+      const radiusesFallback = batchPoints.map(() => '150').join(';');
 
       let batchSuccess = false;
       for (const server of OSRM_SERVERS) {
         try {
-          const url = `${server}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
-          const res = await fetchWithTimeout(url, 4000);
+          // 1. First attempt: Default OSRM snapping (works best for Indian OSM data with 50-80m GPS offsets)
+          let res = await fetchWithTimeout(
+            `${server}/${coordsParam}?overview=full&geometries=geojson&steps=false&continue_straight=false`,
+            5000
+          );
+          // 2. Second attempt: radiuses=150 fallback for remote meters far from mapped OSM roads
+          if (!res.ok) {
+            res = await fetchWithTimeout(
+              `${server}/${coordsParam}?overview=full&geometries=geojson&steps=false&radiuses=${radiusesFallback}&continue_straight=false`,
+              5000
+            );
+          }
+          // 3. Third attempt: bare minimum OSRM query
+          if (!res.ok) {
+            res = await fetchWithTimeout(
+              `${server}/${coordsParam}?overview=full&geometries=geojson`,
+              5000
+            );
+          }
           if (!res.ok) continue;
 
           const data = await res.json();
@@ -440,19 +471,39 @@ export const routeService = {
         }
       }
 
-      // If batch query failed across all servers, fallback to road corridor interpolation for this batch
+      // If batch query failed across all servers, resolve individual 2-point legs via OSRM to preserve real street geometry
       if (!batchSuccess) {
         for (let ptI = 0; ptI < batchPoints.length - 1; ptI++) {
           const fromPt = batchPoints[ptI];
           const toPt = batchPoints[ptI + 1];
           const stopGlobalIdx = b + ptI;
 
-          const airDist = calculateHaversineDistance(fromPt.latitude, fromPt.longitude, toPt.latitude, toPt.longitude) * 1.35;
-          const airDur = airDist / 6.94;
-          totalDist += airDist;
-          totalDur += airDur;
+          let segCoords: Coordinates[] = [];
+          let legDist = 0;
+          let legDur = 0;
 
-          const segCoords = buildRoadCorridorCoordinates(fromPt, toPt);
+          try {
+            const singleRoute = await fetchOSRMRoute(fromPt, toPt);
+            if (singleRoute && singleRoute.coordinates_path && singleRoute.coordinates_path.length >= 2) {
+              segCoords = singleRoute.coordinates_path;
+              legDist = singleRoute.distance_meters;
+              legDur = singleRoute.duration_seconds;
+            }
+          } catch (e) {
+            // fallback if single leg also times out
+          }
+
+          if (!segCoords.length) {
+            const airDist = calculateHaversineDistance(fromPt.latitude, fromPt.longitude, toPt.latitude, toPt.longitude) * 1.35;
+            const airDur = airDist / 6.94;
+            legDist = airDist;
+            legDur = airDur;
+            segCoords = buildRoadCorridorCoordinates(fromPt, toPt);
+          }
+
+          totalDist += legDist;
+          totalDur += legDur;
+
           for (const pt of segCoords) {
             if (
               !fullPath.length ||
@@ -474,9 +525,9 @@ export const routeService = {
               address: cust.address || '',
               latitude: cust.latitude,
               longitude: cust.longitude,
-              distance_from_prev_meters: Math.round(airDist),
-              distance_from_prev_text: airDist >= 1000 ? `${(airDist / 1000).toFixed(2)} km` : `${Math.round(airDist)} m`,
-              duration_from_prev_text: airDur >= 60 ? `${Math.round(airDur / 60)} min` : '< 1 min',
+              distance_from_prev_meters: Math.round(legDist),
+              distance_from_prev_text: legDist >= 1000 ? `${(legDist / 1000).toFixed(2)} km` : `${Math.round(legDist)} m`,
+              duration_from_prev_text: legDur >= 60 ? `${Math.round(legDur / 60)} min` : '< 1 min',
             };
           }
         }

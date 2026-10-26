@@ -527,7 +527,9 @@ async def update_customer(
     if request.dtc_code is not None:
         cus.dtc_code = CustomerImportService.normalize_dtc_code(request.dtc_code)
     if request.disconnection_status is not None:
-        cus.disconnection_status = request.disconnection_status
+        cus.disconnection_status = request.disconnection_status.upper().strip()
+        if cus.status and cus.status.upper().strip() in ["TD", "PD", "BUR", "DIS", "NC", "OTHER"]:
+            cus.status = "pending" if (cus.pending_amount or 0) > 0 else "paid"
     if request.pending_days is not None:
         cus.pending_days = str(request.pending_days)
     if request.assigned_officer_id is not None:

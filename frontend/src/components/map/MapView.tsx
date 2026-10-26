@@ -11,6 +11,7 @@ import {
 } from '@/types';
 import MapControls from '@/components/map/MapControls';
 import NavigationPanel from '@/components/map/NavigationPanel';
+import { createConsumerMarkerIcon } from '@/components/map/ConsumerMarker';
 import { speakInstruction, stopSpeech } from '@/utils/speech';
 import { Compass } from 'lucide-react';
 
@@ -35,66 +36,6 @@ interface MapViewProps {
 }
 
 // ─── SVG Marker Builders ────────────────────────────────────────────────────────
-
-function buildConsumerMarkerHtml(
-  status: string,
-  priority: string | undefined,
-  isSelected: boolean,
-  sequence?: number,
-  meterNumber?: string
-): string {
-  const colorMap: Record<string, string> = {
-    overdue: '#ef4444',
-    pending: '#f59e0b',
-    partially_paid: '#3b82f6',
-    paid: '#10b981',
-  };
-  const priorityColor = priority === 'critical' ? '#dc2626' : priority === 'high' ? '#ea580c' : null;
-  const baseColor = isSelected ? '#0284c7' : priorityColor || colorMap[status] || '#64748b';
-
-  // Highlighted Selected State (Elevated with glowing beacon halo and meter number pill badge)
-  if (isSelected) {
-    const meterText = meterNumber
-      ? meterNumber.startsWith('MTR') ? meterNumber : `MTR-${meterNumber.slice(-6)}`
-      : '';
-    return `
-      <div style="position: relative; width: 74px; height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; cursor: pointer;">
-        <!-- Pulsing beacon halo -->
-        <div style="position: absolute; top: 0px; width: 34px; height: 34px; border-radius: 50%; background: rgba(14, 165, 233, 0.35); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
-        
-        <!-- Center Focus Pin -->
-        <div style="position: relative; width: 28px; height: 28px; border-radius: 50%; background: #0284c7; border: 2.5px solid #ffffff; box-shadow: 0 0 12px rgba(14, 165, 233, 0.9), 0 3px 8px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-family: system-ui, sans-serif; font-size: 12px;">
-          ${sequence !== undefined
-            ? sequence
-            : `<svg width="12" height="12" viewBox="0 0 24 24" fill="#ffffff"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`}
-        </div>
-
-        ${meterText ? `
-          <div style="margin-top: 3px; padding: 2px 6px; background: #0f172a; border: 1.5px solid #ffffff; border-radius: 4px; color: #ffffff; font-size: 9px; font-weight: 800; font-family: monospace; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.5); letter-spacing: 0.2px;">
-            ${meterText}
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  // Small compact icon for ALL meters on the map (clean, clutter-free, high-performance)
-  const isNumbered = sequence !== undefined;
-  const isTripleDigit = isNumbered && sequence > 99;
-  const size = isNumbered ? (isTripleDigit ? 24 : 22) : 18;
-  const fontSize = isNumbered ? (isTripleDigit ? '8.5px' : '10px') : '8px';
-  const letterSpacing = isTripleDigit ? '-0.5px' : 'normal';
-
-  return `
-    <div style="position: relative; width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.15s ease-out;">
-      <div style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${baseColor}; border: 2px solid #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: 900; font-family: system-ui, sans-serif; font-size: ${fontSize}; letter-spacing: ${letterSpacing};">
-        ${isNumbered
-          ? sequence
-          : `<svg width="8" height="8" viewBox="0 0 24 24" fill="#ffffff"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`}
-      </div>
-    </div>
-  `;
-}
 
 function buildOfficerMarkerHtml(heading: number | null | undefined): string {
   const rotDeg = heading !== null && heading !== undefined ? heading : 0;
@@ -193,8 +134,7 @@ export default function MapView({
   const officerMarkerRef = useRef<any>(null);
   const customerMarkersRef = useRef<Map<string, any>>(new Map());
   const markerStateCacheRef = useRef<Map<string, string>>(new Map());
-  const routePolylineCasingRef = useRef<any>(null);
-  const routePolylineRef = useRef<any>(null);
+  const multiRoutePolylineRef = useRef<any>(null);
   const LRef = useRef<any>(null);
 
   const [mapReady, setMapReady] = useState<boolean>(false);
@@ -706,20 +646,14 @@ export default function MapView({
 
       markerStateCacheRef.current.set(customer.customer_id, stateKey);
 
-      const markerHtml = buildConsumerMarkerHtml(
+      const icon = createConsumerMarkerIcon(
+        L,
         customer.status,
         customer.priority,
         isHighlighted,
         multiStop?.sequence,
         customer.meter_number
       );
-
-      const icon = L.divIcon({
-        html: markerHtml,
-        className: 'customer-marker-div',
-        iconSize: isHighlighted ? [74, 58] : [size, size],
-        iconAnchor: isHighlighted ? [37, 14] : [size / 2, size / 2],
-      });
 
       const pos: [number, number] = [customer.latitude, customer.longitude];
       const daysText = rawPendingDays !== undefined && rawPendingDays !== null ? `${rawPendingDays} Days` : '-';
@@ -818,46 +752,34 @@ export default function MapView({
     const map = leafletMapRef.current;
     if (!map || !L) return;
 
-    // Remove existing route polylines
-    if (routePolylineCasingRef.current) {
-      map.removeLayer(routePolylineCasingRef.current);
-      routePolylineCasingRef.current = null;
-    }
-    if (routePolylineRef.current) {
-      map.removeLayer(routePolylineRef.current);
-      routePolylineRef.current = null;
-    }
-
-    const activePath = multiRoute?.coordinates_path?.length
+    const multiPath = multiRoute?.coordinates_path?.length
       ? multiRoute.coordinates_path
       : route?.coordinates_path?.length
       ? route.coordinates_path
       : null;
 
-    if (activePath && activePath.length >= 2) {
-      const latLngs = activePath.map((p) => [p.latitude, p.longitude]);
-
-      // Outer glowing casing line
-      routePolylineCasingRef.current = L.polyline(latLngs, {
-        color: '#0284c7',
-        weight: 8,
-        opacity: 0.45,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
-
-      // Inner crisp electric blue route line
-      routePolylineRef.current = L.polyline(latLngs, {
-        color: '#38bdf8',
-        weight: 4.5,
-        opacity: 0.95,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
+    if (multiPath && multiPath.length >= 2) {
+      const latLngs: [number, number][] = multiPath.map((pt) => [pt.latitude, pt.longitude]);
+      if (!multiRoutePolylineRef.current) {
+        multiRoutePolylineRef.current = L.polyline(latLngs, {
+          color: '#0284c7', // Sky-blue route line color
+          weight: 7,        // Line thickness
+          opacity: 0.95,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(map);
+      } else {
+        multiRoutePolylineRef.current.setLatLngs(latLngs);
+      }
 
       // If not actively following officer GPS, auto fit to route
       if (!isFollowing) {
         map.fitBounds(L.latLngBounds(latLngs), { padding: [50, 50] });
+      }
+    } else {
+      if (multiRoutePolylineRef.current) {
+        map.removeLayer(multiRoutePolylineRef.current);
+        multiRoutePolylineRef.current = null;
       }
     }
   }, [mapReady, route, multiRoute, isFollowing]);

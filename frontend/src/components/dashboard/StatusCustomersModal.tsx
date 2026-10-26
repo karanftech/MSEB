@@ -13,6 +13,7 @@ import {
   FileText,
   ShieldAlert,
   PowerOff,
+  DollarSign,
 } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { Customer } from '@/types';
@@ -115,10 +116,9 @@ export default function StatusCustomersModal({
     if (!statusType) return;
     setLoading(true);
     try {
-      // Fetch customers and payments to accurately calculate per-customer collected money
       const [data, payments] = await Promise.all([
         customerService.getCustomers(),
-        paymentService.getPayments({ limit: 500 }).catch(() => [])
+        paymentService.getPayments({ limit: 500 }).catch(() => []),
       ]);
 
       const pMap: Record<string, number> = {};
@@ -153,7 +153,7 @@ export default function StatusCustomersModal({
       (c) =>
         c.name.toLowerCase().includes(q) ||
         c.customer_id.toLowerCase().includes(q) ||
-        c.meter_number.toLowerCase().includes(q) ||
+        (c.meter_number && c.meter_number.toLowerCase().includes(q)) ||
         (c.address && c.address.toLowerCase().includes(q)) ||
         (c.dtc_code && c.dtc_code.toLowerCase().includes(q))
     );
@@ -212,32 +212,35 @@ export default function StatusCustomersModal({
           </div>
         </div>
 
-        {/* Search & Actions Bar */}
+        {/* Clean Search & Actions Bar (no filter side button) */}
         <div className="flex items-center gap-2">
+          {/* Search Input Field */}
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={`Search ${statusType === 'OTHER' ? 'NC' : statusType} consumers by name, meter #, DTC, address...`}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-8 py-2 text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-8 py-2 text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium text-slate-900 placeholder:text-slate-400"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full cursor-pointer"
+                title="Clear search"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
+          {/* Refresh Button */}
           <button
             type="button"
             onClick={loadCategoryCustomers}
-            className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 transition-colors cursor-pointer shrink-0"
+            className="h-9 w-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 flex items-center justify-center transition-colors cursor-pointer shrink-0"
             title="Refresh list"
           >
             <RotateCcw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
@@ -332,6 +335,19 @@ export default function StatusCustomersModal({
                     </div>
                   </div>
 
+                  {/* Actions (Collect Payment only - Navigate button removed) */}
+                  {onCollectPayment && cus.pending_amount > 0 && (
+                    <div className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => onCollectPayment(cus)}
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                      >
+                        <DollarSign className="w-3.5 h-3.5" />
+                        <span>Collect</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

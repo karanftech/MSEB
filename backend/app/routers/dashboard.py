@@ -160,6 +160,7 @@ async def get_officer_dashboard(
 
         metrics = OfficerDashboardMetrics(
             total_assigned_customers=total_assigned,
+            total_assigned_amount=round(total_pending_amount + total_collected_amount, 2),
             total_pending_amount=round(total_pending_amount, 2),
             number_of_pending_bills=pending_count,
             number_of_completed_collections=paid_count,

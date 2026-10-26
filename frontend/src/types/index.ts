@@ -189,6 +189,7 @@ export interface MultiRouteCalculationResult {
 
 export interface OfficerDashboardMetrics {
   total_assigned_customers: number;
+  total_assigned_amount?: number;
   total_pending_amount: number;
   number_of_pending_bills: number;
   number_of_completed_collections: number;

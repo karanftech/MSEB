@@ -4,6 +4,7 @@ from app.schemas.customer import NearbyCustomerResponse
 
 class OfficerDashboardMetrics(BaseModel):
     total_assigned_customers: int
+    total_assigned_amount: float = 0.0
     total_pending_amount: float
     number_of_pending_bills: int
     number_of_completed_collections: int

@@ -174,7 +174,7 @@ function MapPageContent() {
   const lastFilteredCustomerIdsRef = React.useRef<string>('');
 
   useEffect(() => {
-    const shouldCalculate = (isDtcFiltered || isMultiNavigating) && pendingCustomersForRoute.length > 0;
+    const shouldCalculate = pendingCustomersForRoute.length > 0;
 
     if (shouldCalculate) {
       const effectiveCoords = officerCoords || { latitude: 21.1458, longitude: 79.0882 };
@@ -208,17 +208,16 @@ function MapPageContent() {
             setMultiRoute(res);
           })
           .catch((err) => {
-            console.warn('Auto multi-route calculation error for filtered DTC:', err);
+            console.warn('Auto multi-route calculation error:', err);
           });
       }, 400);
 
       return () => clearTimeout(timer);
     } else {
-      // Clear route if no DTC is filtered and not multi-navigating
       lastFilteredCustomerIdsRef.current = '';
       setMultiRoute(null);
     }
-  }, [isDtcFiltered, isMultiNavigating, pendingCustomersForRoute, officerCoords]);
+  }, [pendingCustomersForRoute, officerCoords]);
 
   // Count aggregates for filters
   const counts = useMemo(() => {
@@ -455,7 +454,7 @@ function MapPageContent() {
           officerHeading={officerHeading}
           selectedCustomer={selectedCustomer}
           route={activeRoute}
-          multiRoute={(isMultiNavigating || isDtcFiltered) ? multiRoute : null}
+          multiRoute={multiRoute}
           activeStopIndex={currentStopIndex}
           navState={navStateObj}
           onSelectCustomer={handleSelectMapCustomer}
