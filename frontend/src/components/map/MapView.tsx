@@ -70,6 +70,7 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       keepBuffer: 2,
       updateWhenIdle: true,
       updateInterval: 150,
+      referrerPolicy: 'no-referrer',
     },
   },
   satellite: {
@@ -81,6 +82,7 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       keepBuffer: 2,
       updateWhenIdle: true,
       updateInterval: 150,
+      referrerPolicy: 'no-referrer',
     },
   },
   hybrid: {
@@ -92,6 +94,7 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       keepBuffer: 2,
       updateWhenIdle: true,
       updateInterval: 150,
+      referrerPolicy: 'no-referrer',
     },
   },
   terrain: {
@@ -103,6 +106,7 @@ const TILE_LAYERS: Record<MapLayerType, { url: string; options: any }> = {
       keepBuffer: 2,
       updateWhenIdle: true,
       updateInterval: 150,
+      referrerPolicy: 'no-referrer',
     },
   },
 };
@@ -210,35 +214,56 @@ export default function MapView({
           (window as any).L = L;
         }
 
-        // Load leaflet-rotate plugin
+        // Load leaflet-rotate plugin safely
+        let hasRotate = false;
         try {
           await import('leaflet-rotate');
+          hasRotate = typeof (L as any).Map?.prototype?.setBearing === 'function';
         } catch (rotErr) {
           console.warn('Leaflet-Rotate plugin note:', rotErr);
         }
 
         if (!isMounted || !mapContainerRef.current || leafletMapRef.current) return;
 
-        const defaultLat = officerCoords?.latitude ?? 21.1458;
-        const defaultLng = officerCoords?.longitude ?? 79.0882;
+        const defaultLat = Number(officerCoords?.latitude) || 21.1458;
+        const defaultLng = Number(officerCoords?.longitude) || 79.0882;
 
-        // Initialize Leaflet map with 360° rotation enabled
-        const map = (L as any).map(mapContainerRef.current, {
+        const mapOptions: any = {
           center: [defaultLat, defaultLng],
           zoom: 16,
-          rotate: true,
-          bearing: officerHeading || 0,
-          touchRotate: false, // Managed by our high-performance RAF gesture controller
           touchZoom: true,
           shiftKeyRotate: true,
           rotateControl: false,
           zoomControl: false,
           attributionControl: false,
+        };
+
+        if (hasRotate) {
+          mapOptions.rotate = true;
+          mapOptions.bearing = officerHeading || 0;
+          mapOptions.touchRotate = false;
+        }
+
+        // Initialize Leaflet map
+        const map = (L as any).map(mapContainerRef.current, mapOptions);
+
+        // Set tile layer with automatic OpenStreetMap fallback on tile load error
+        const layerConfig = TILE_LAYERS['roadmap'];
+        const tileLayer = L.tileLayer(layerConfig.url, {
+          ...layerConfig.options,
+          referrerPolicy: 'no-referrer',
+        }).addTo(map);
+
+        let fallbackTriggered = false;
+        tileLayer.on('tileerror', () => {
+          if (!fallbackTriggered) {
+            fallbackTriggered = true;
+            console.warn('Google tile load issue, switching to OpenStreetMap fallback');
+            tileLayer.setUrl('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+          }
         });
 
-        // Set tile layer
-        const layerConfig = TILE_LAYERS['roadmap'];
-        tileLayerRef.current = L.tileLayer(layerConfig.url, layerConfig.options).addTo(map);
+        tileLayerRef.current = tileLayer;
 
         // Sync bearing on rotateend to avoid thrashing React state on every frame
         map.on('rotateend', () => {
@@ -467,15 +492,46 @@ export default function MapView({
 
         leafletMapRef.current = map;
         setMapReady(true);
+
+        // Ensure Leaflet calculates viewport geometry correctly on mobile
+        setTimeout(() => {
+          if (isMounted && map) {
+            map.invalidateSize();
+          }
+        }, 100);
+
+        setTimeout(() => {
+          if (isMounted && map) {
+            map.invalidateSize();
+          }
+        }, 400);
+
+        let resizeObserver: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== 'undefined' && container) {
+          resizeObserver = new ResizeObserver(() => {
+            if (isMounted && map) {
+              map.invalidateSize();
+            }
+          });
+          resizeObserver.observe(container);
+        }
+
+        return () => {
+          if (resizeObserver) resizeObserver.disconnect();
+        };
       } catch (err) {
         console.error('Failed to initialize Leaflet Map:', err);
       }
     }
 
-    initLeaflet();
+    let subCleanup: (() => void) | void;
+    initLeaflet().then((res) => {
+      subCleanup = res;
+    });
 
     return () => {
       isMounted = false;
+      if (typeof subCleanup === 'function') subCleanup();
       if (cleanUpTouchListeners) cleanUpTouchListeners();
       if (leafletMapRef.current) {
         leafletMapRef.current.remove();
@@ -496,7 +552,21 @@ export default function MapView({
     }
 
     const cfg = TILE_LAYERS[layer] || TILE_LAYERS['roadmap'];
-    tileLayerRef.current = L.tileLayer(cfg.url, cfg.options).addTo(map);
+    const newLayer = L.tileLayer(cfg.url, {
+      ...cfg.options,
+      referrerPolicy: 'no-referrer',
+    }).addTo(map);
+
+    let layerFailed = false;
+    newLayer.on('tileerror', () => {
+      if (!layerFailed) {
+        layerFailed = true;
+        console.warn('Selected layer tile error, switching to OpenStreetMap fallback');
+        newLayer.setUrl('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+      }
+    });
+
+    tileLayerRef.current = newLayer;
   };
 
   // ── 3. Reset North (0° Bearing) ──────────────────────────────────────────────
@@ -695,7 +765,7 @@ export default function MapView({
 
       if (marker) {
         marker.setLatLng(pos);
-        marker.setIcon(icon);
+        if (icon) marker.setIcon(icon);
         marker.setZIndexOffset(isHighlighted ? 1500 : 100);
         marker.getPopup()?.setContent(popupHtml);
 
@@ -710,6 +780,7 @@ export default function MapView({
           }
         }, 0);
       } else {
+        if (!icon) return;
         marker = L.marker(pos, { icon, zIndexOffset: isHighlighted ? 1500 : 100 }).addTo(map);
 
         const popup = L.popup({
@@ -785,14 +856,22 @@ export default function MapView({
   }, [mapReady, route, multiRoute, isFollowing]);
 
   return (
-    <div className="relative w-full h-full flex flex-col overflow-hidden bg-slate-950">
+    <div className="relative w-full h-full flex flex-col overflow-hidden bg-slate-100">
       {/* Leaflet Map Canvas with 360° Two-Finger Rotation */}
       <div
         ref={mapContainerRef}
-        className="w-full h-full z-0 outline-none select-none"
+        className="w-full h-full z-0 outline-none select-none bg-slate-100"
         style={{ touchAction: 'none' }}
         tabIndex={0}
       />
+
+      {/* Clean Map Loading Indicator */}
+      {!mapReady && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-100/90 backdrop-blur-xs">
+          <div className="w-8 h-8 rounded-full border-3 border-sky-600 border-t-transparent animate-spin mb-2" />
+          <span className="text-xs font-semibold text-slate-600">Loading Map...</span>
+        </div>
+      )}
 
       {/* Floating 360° Compass & Map Controls */}
       <div className="fixed right-4 bottom-20 md:bottom-6 md:right-6 z-[60] flex flex-col items-center gap-2.5">

@@ -10,7 +10,7 @@ import ReceiptView from '@/components/payments/ReceiptView';
 const MapView = dynamic(() => import('@/components/map/MapView'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center w-full h-full bg-slate-950">
+    <div className="flex items-center justify-center w-full h-full bg-slate-100">
       <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-500"></div>
     </div>
   ),
@@ -512,7 +512,7 @@ export default function MapPage() {
 
   if (!mounted) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-950">
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-500"></div>
       </div>
     );
@@ -521,7 +521,7 @@ export default function MapPage() {
   return (
     <React.Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-slate-950">
+        <div className="flex items-center justify-center min-h-screen bg-slate-50">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-500"></div>
         </div>
       }
